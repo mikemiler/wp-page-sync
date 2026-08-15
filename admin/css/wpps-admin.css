@@ -1,0 +1,180 @@
+/**
+ * WP Page Sync admin styles.
+ *
+ * @package WP_Page_Sync
+ */
+
+/*
+ * State utility. The !important is load-bearing: elements combine this class
+ * with classes that set their own display (.wpps-modal-overlay uses flex,
+ * defined later in this file with equal specificity), and without it the
+ * later rule wins and "hidden" elements render.
+ */
+.wpps-hidden {
+	display: none !important;
+}
+
+.wpps-card {
+	margin-top: 16px;
+	max-width: 760px;
+}
+
+.wpps-feedback {
+	margin-left: 8px;
+}
+
+.wpps-feedback-ok {
+	color: #00a32a;
+}
+
+.wpps-feedback-error {
+	color: #d63638;
+}
+
+.wpps-wrap > h2 {
+	margin-top: 24px;
+}
+
+.wpps-peers-table {
+	max-width: 1100px;
+}
+
+.wpps-peers-table .wpps-row-feedback {
+	display: inline-block;
+}
+
+/* Sync tab */
+
+.wpps-toolbar {
+	margin: 16px 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.wpps-bulkbar {
+	margin: 8px 0;
+}
+
+.wpps-posts-table,
+.wpps-peer-posts-table {
+	max-width: 1100px;
+}
+
+.wpps-posts-table .check-column,
+.wpps-peer-posts-table .check-column {
+	width: 28px;
+	padding: 8px 0 0 8px;
+}
+
+/* Status badges */
+
+.wpps-badge {
+	display: inline-block;
+	padding: 2px 8px;
+	border-radius: 3px;
+	font-size: 12px;
+	line-height: 1.6;
+	background: #dcdcde;
+	color: #1d2327;
+	white-space: nowrap;
+}
+
+.wpps-badge-in_sync,
+.wpps-badge-in_sync_adopted {
+	background: #edfaef;
+	color: #007017;
+}
+
+.wpps-badge-local_newer,
+.wpps-badge-missing_on_peer,
+.wpps-badge-missing_local {
+	background: #e5f5fa;
+	color: #135e96;
+}
+
+.wpps-badge-peer_newer,
+.wpps-badge-never_synced {
+	background: #fcf9e8;
+	color: #996800;
+}
+
+.wpps-badge-diverged {
+	background: #fcf0f1;
+	color: #b32d2e;
+}
+
+.wpps-badge-no_slug,
+.wpps-badge-unknown {
+	background: #f0f0f1;
+	color: #646970;
+}
+
+/* Modal */
+
+.wpps-modal-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.6);
+	z-index: 100100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.wpps-modal {
+	background: #fff;
+	border-radius: 4px;
+	box-shadow: 0 3px 30px rgba(0, 0, 0, 0.3);
+	padding: 20px 24px;
+	width: 560px;
+	max-width: 92vw;
+	max-height: 84vh;
+	overflow-y: auto;
+}
+
+.wpps-modal h2 {
+	margin-top: 0;
+	word-break: break-word;
+}
+
+.wpps-modal-actions {
+	margin-bottom: 0;
+	text-align: right;
+}
+
+/* Verify report */
+
+.wpps-report-table {
+	max-width: 1100px;
+	margin-bottom: 16px;
+}
+
+.wpps-report-detail {
+	word-break: break-all;
+	max-width: 380px;
+}
+
+.wpps-report-errors strong,
+.wpps-report-errors h3 {
+	color: #b32d2e;
+}
+
+.wpps-report-warnings strong {
+	color: #996800;
+}
+
+.wpps-report-errors ul,
+.wpps-report-warnings ul {
+	list-style: disc;
+	margin: 4px 0 8px 20px;
+	word-break: break-all;
+}
+
+/* Log */
+
+.wpps-log-table {
+	max-width: 1100px;
+	margin-top: 8px;
+}

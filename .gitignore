@@ -1,0 +1,16 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Build artifacts
+/build/
+*.zip
+
+# Composer dev tooling (phpcs/wpcs); composer.json + composer.lock are committed
+/vendor/
+
+# Local-only developer guidance (keep out of the public repo)
+CLAUDE.md
