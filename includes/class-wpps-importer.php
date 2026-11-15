@@ -443,16 +443,51 @@ class WPPS_Importer {
 		/*
 		 * The importer runs as user 0, where kses would strip inline <svg>
 		 * from GenerateBlocks content. Same approach as WP's own importer;
-		 * the writer is an HMAC-authenticated peer paired by an admin.
+		 * the writer is an HMAC-authenticated peer paired by an admin. The
+		 * pre-update revision sits INSIDE the bracket on purpose: it writes
+		 * the old content through wp_insert_post() as well, so with kses
+		 * active the stored revision would lose the same inline SVG.
 		 */
 		kses_remove_filters();
 		try {
+			if ( $existing ) {
+				$this->keep_previous_content( $existing );
+			}
 			$post_id = wp_insert_post( wp_slash( $postarr ), true );
 		} finally {
 			kses_init_filters();
 		}
 
 		return $post_id;
+	}
+
+	/**
+	 * Stores the target's CURRENT content as a post revision before an
+	 * overwrite.
+	 *
+	 * wp_save_post_revision() re-reads the post from the database, so calling
+	 * it before the update snapshots the OLD state. Core's own revision runs
+	 * on wp_after_insert_post and stores the NEW state, which leaves a post
+	 * that never had a revision (created programmatically, never opened in the
+	 * editor) with no copy of what the sync replaced. This call is what makes
+	 * the force-option promise true.
+	 *
+	 * Its reach is exactly _wp_post_revision_fields(): post_title, post_content
+	 * and post_excerpt. Everything apply_meta() and apply_featured() write after
+	 * the upsert (post meta, the page template, the featured image) is outside a
+	 * revision and cannot be restored from one, which is why the force label and
+	 * the readme say so.
+	 *
+	 * Core re-checks wp_revisions_enabled() and skips a revision identical to
+	 * the latest one, so an unchanged re-import adds nothing.
+	 *
+	 * @param WP_Post $existing Target post as it currently stands.
+	 * @return void
+	 */
+	private function keep_previous_content( WP_Post $existing ) {
+		if ( wp_revisions_enabled( $existing ) ) {
+			wp_save_post_revision( $existing->ID );
+		}
 	}
 
 	/**

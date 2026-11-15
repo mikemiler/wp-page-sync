@@ -247,6 +247,41 @@ class WPPS_Sync {
 	}
 
 	/**
+	 * Conflict status of ONE local post against ONE peer.
+	 *
+	 * Same machinery the Sync tab uses (peer /status item + compute_status +
+	 * the stored state pair), for the editor check, which cares about a single
+	 * post only.
+	 *
+	 * This is the plugin's one call that nobody asked for: it fires on every
+	 * editor load, once per peer, so it runs on the short
+	 * WPPS_TIMEOUT_EDITOR_CHECK instead of the full API timeout the
+	 * user-initiated calls use.
+	 *
+	 * @param array   $peer Peer record.
+	 * @param WP_Post $post Local post.
+	 * @return string|WP_Error Status key, or the peer request's error.
+	 */
+	public function post_sync_status( array $peer, WP_Post $post ) {
+		$path = (string) get_page_uri( $post );
+		if ( '' === $path ) {
+			return new WP_Error( 'wpps_no_slug', __( 'The post has no slug and cannot be compared.', 'wp-page-sync' ) );
+		}
+
+		$peer_item = $this->peer_status_single( $peer, $post->post_type, $path, WPPS_TIMEOUT_EDITOR_CHECK );
+		if ( is_wp_error( $peer_item ) ) {
+			return $peer_item;
+		}
+
+		return self::compute_status(
+			! empty( $peer_item['exists'] ),
+			$this->exporter->content_hash( $post ),
+			isset( $peer_item['hash'] ) ? (string) $peer_item['hash'] : '',
+			self::read_state( $post->ID, (string) $peer['peer_id'] )
+		);
+	}
+
+	/**
 	 * The peer's post list (pull list), annotated with local existence.
 	 *
 	 * @param array  $peer      Peer record.
@@ -611,12 +646,14 @@ class WPPS_Sync {
 	/**
 	 * One-item /status call against the peer.
 	 *
-	 * @param array  $peer      Peer record.
-	 * @param string $post_type Post type.
-	 * @param string $path      Post path.
+	 * @param array    $peer      Peer record.
+	 * @param string   $post_type Post type.
+	 * @param string   $path      Post path.
+	 * @param int|null $timeout   Timeout in seconds; null keeps WPPS_TIMEOUT_API,
+	 *                            which every user-initiated caller uses.
 	 * @return array|WP_Error Peer status item (exists=false default).
 	 */
-	private function peer_status_single( array $peer, $post_type, $path ) {
+	private function peer_status_single( array $peer, $post_type, $path, $timeout = null ) {
 		$response = $this->client->request(
 			$peer,
 			'POST',
@@ -629,7 +666,8 @@ class WPPS_Sync {
 						'path'      => $path,
 					),
 				),
-			)
+			),
+			$timeout
 		);
 		if ( is_wp_error( $response ) ) {
 			return $response;

@@ -8,7 +8,7 @@
  * Plugin Name:       WP Page Sync
  * Plugin URI:        https://github.com/mikemiler/wp-page-sync
  * Description:       Syncs pages and posts, including their media files and GenerateBlocks global styles, between two WordPress installs over a signed connection.
- * Version:           1.0.0
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            WP Mike
@@ -21,7 +21,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPPS_VERSION', '1.0.0' );
+define( 'WPPS_VERSION', '1.1.0' );
 define( 'WPPS_PLUGIN_FILE', __FILE__ );
 define( 'WPPS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPPS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
@@ -37,6 +37,16 @@ define( 'WPPS_NONCE_TTL', 600 );
 define( 'WPPS_KEY_TTL', 3600 );
 define( 'WPPS_TIMEOUT_API', 30 );
 define( 'WPPS_TIMEOUT_MEDIA', 60 );
+
+/*
+ * The editor check is the only outbound call that is not user-initiated: it
+ * runs on every post.php load, once per connected peer, before anyone asked
+ * for anything. A hanging peer would otherwise occupy a PHP worker for the
+ * full WPPS_TIMEOUT_API per open editor, and the notice could still appear
+ * half a minute into the user's work. The 8 seconds are a chosen value, not
+ * derived from a measurement.
+ */
+define( 'WPPS_TIMEOUT_EDITOR_CHECK', 8 );
 define( 'WPPS_LOG_MAX', 50 );
 
 /**

@@ -14,6 +14,15 @@ in both directions, including the upload files they reference.
   Classes that exist only on the target are never deleted.
 - Detects conflicts via content hashes: two copies that differ are reported
   instead of overwritten, and overwriting needs an explicit confirmation.
+- Warns in the editor when the connected site holds a newer copy of the post
+  being edited, and offers to pull it and reload. When both sides changed, the
+  notice says so and sends the decision to the Sync tab instead of offering a
+  one-click pull.
+- Keeps the overwritten text: before an import replaces an existing post, its
+  current title, content and excerpt are stored as a post revision on the
+  receiving site. A revision covers no more than those three fields, and none
+  at all when that site has revisions switched off or the post type does not
+  support revisions.
 - Verifies a site for missing upload files, URLs pointing at another
   environment, broken internal links and undefined global classes.
 

@@ -4,7 +4,7 @@ Tags: sync, migration, staging, media, generateblocks
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.1.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -39,6 +39,19 @@ changed on both. A conflict is reported instead of silently overwritten, and
 overwriting requires an explicit confirmation. Post meta is not part of that
 hash: two copies can be reported as in sync while their custom fields differ,
 and meta deleted on the source is not deleted on the target by an import.
+
+Opening an existing page or post for editing checks the connected site in the
+background. If the copy there is newer, a notice offers to pull it and reload
+the editor; if both sides changed since the last sync, the notice says so and
+points to the Sync tab rather than offering a one-click pull that would discard
+local work. Before an import overwrites an existing post, its current title,
+content and excerpt are written to a post revision, so that much stays
+recoverable even on a page that had no revisions before. A revision covers no
+more than those three fields: post meta, the featured image and the page
+template are written after the post itself and cannot be restored from it, so
+the custom fields mentioned above stay outside that safety net too. And nothing
+is saved at all when the receiving site has revisions switched off or the post
+type does not support them.
 
 Two limits are worth knowing before installing. The plugin is built for single
 WordPress installs and has no multisite or network handling. And it never
@@ -77,6 +90,14 @@ Updates are delivered via GitHub, not wordpress.org.
    unaffected.
 
 == Changelog ==
+
+= 1.1.0 =
+* New: opening an existing page or post for editing now checks the connected site in the background. If the copy there is newer, a notice offers to pull it and reload the editor in one click; if both sides changed since the last sync, the notice says so and points to the Sync tab instead of offering a pull that would discard local work.
+* New: the post list in the Sync tab can be filtered by sync status and searched by title or path. The status dropdown offers only the statuses the loaded list actually contains, and a bulk push acts on the visible selection only.
+* Improvement: an import no longer replaces an existing post without a trace. The target's current title, content and excerpt are written to a post revision first, so they stay recoverable even on a page that never had a revision before. A revision covers no more than those three fields, and none at all on a site with revisions switched off or a post type that does not support them.
+* Improvement: while a push or pull is running, the preview dialog locks itself. Both buttons and the force option are disabled and a click on the backdrop no longer closes it, so the same sync cannot be started twice or dismissed mid-write. Its progress and result message moved below the buttons, where a full error message has the room to read as a block.
+* Improvement: the lock now works in both directions. A bulk push keeps the preview dialog from confirming a single push or pull to the same site, and says so in the dialog instead of leaving a dead button. Opening a preview to look at a post stays possible while the bulk run finishes.
+* Improvement: the push and pull preview states the media situation in plain words. "Media: 4 referenced, all already on the target." replaces the old pair of counters, which showed "To transfer: 0 (0 B)" and read as if nothing at all would happen.
 
 = 1.0.0 =
 * New: pair two WordPress installs with a single-use, expiring connection key that is created on one site and pasted on the other.
