@@ -119,19 +119,23 @@ class WPPS_Exporter {
 
 	/**
 	 * Content hash (plan §6.4): sha256 over title|path|status|normalized
-	 * content|normalized excerpt. pending counts as draft so hashes stay
-	 * stable across the pending→draft import rule. Attachment IDs in media
-	 * blocks are neutralized: the import remaps them to the receiving site's
-	 * own IDs, so they differ between two otherwise identical copies.
+	 * content|normalized excerpt|featured image path. pending counts as
+	 * draft so hashes stay stable across the pending→draft import rule.
+	 * Attachment IDs in media blocks are neutralized: the import remaps them
+	 * to the receiving site's own IDs, so they differ between two otherwise
+	 * identical copies. For the same reason the featured image enters as its
+	 * uploads-relative path, never as ID (site-specific) or URL (host-bound):
+	 * the import writes the file at that same relative path.
 	 *
-	 * @param string $title   Post title.
-	 * @param string $path    Hierarchical path.
-	 * @param string $status  Post status.
-	 * @param string $content Raw content.
-	 * @param string $excerpt Raw excerpt.
+	 * @param string $title    Post title.
+	 * @param string $path     Hierarchical path.
+	 * @param string $status   Post status.
+	 * @param string $content  Raw content.
+	 * @param string $excerpt  Raw excerpt.
+	 * @param string $featured Normalized featured image rel path ("" = none).
 	 * @return string
 	 */
-	public function hash_fields( $title, $path, $status, $content, $excerpt ) {
+	public function hash_fields( $title, $path, $status, $content, $excerpt, $featured ) {
 		$hosts  = $this->known_hosts();
 		$status = ( 'pending' === $status ) ? 'draft' : $status;
 
@@ -145,6 +149,7 @@ class WPPS_Exporter {
 					(string) $status,
 					WPPS_Rewriter::normalize( WPPS_Rewriter::neutralize_attachment_ids( $content ), $hosts ),
 					WPPS_Rewriter::normalize( (string) $excerpt, $hosts ),
+					(string) $featured,
 				)
 			)
 		);
@@ -162,8 +167,27 @@ class WPPS_Exporter {
 			(string) get_page_uri( $post ),
 			$post->post_status,
 			$post->post_content,
-			$post->post_excerpt
+			$post->post_excerpt,
+			$this->featured_rel( $post->ID )
 		);
+	}
+
+	/**
+	 * Uploads-relative path of a post's featured image, for hashing.
+	 *
+	 * The import's -wpps{6 hex} dedup suffix and core's -scaled suffix are
+	 * stripped, so a target-side renamed copy of the same image hashes equal.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string "" when the post has no featured image.
+	 */
+	private function featured_rel( $post_id ) {
+		$thumb_id = (int) get_post_thumbnail_id( $post_id );
+		if ( ! $thumb_id ) {
+			return '';
+		}
+		$rel = (string) get_post_meta( $thumb_id, '_wp_attached_file', true );
+		return (string) preg_replace( '/(?:-wpps[0-9a-f]{6}|-scaled)(\.[A-Za-z0-9]+)$/', '$1', $rel );
 	}
 
 	/**
@@ -186,6 +210,8 @@ class WPPS_Exporter {
 				'no_found_rows'  => false,
 			)
 		);
+		// One query for all featured images the content hashes read.
+		update_post_thumbnail_cache( $query );
 
 		$items = array();
 		foreach ( $query->posts as $post ) {

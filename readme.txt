@@ -49,9 +49,9 @@ pushed or pulled separately. Classes that exist only on the target are never
 deleted. The color palette is the exception to that rule: it is replaced as a
 whole instead of merged, so colors that exist only on the target are lost.
 
-Both copies are compared by a content hash over title, path, status, content and
-excerpt (the date, the terms and the attachment IDs in media blocks are not
-part of it), so the plugin knows whether a post is in sync, changed on one side,
+Both copies are compared by a content hash over title, path, status, content,
+excerpt and the featured image file (the date, the terms and the
+attachment IDs in media blocks are not part of it), so the plugin knows whether a post is in sync, changed on one side,
 or changed on both. A conflict is reported instead of silently overwritten, and
 overwriting requires an explicit confirmation. Post meta is not part of that
 hash: two copies can be reported as in sync while their custom fields differ,
@@ -113,7 +113,8 @@ Updates are delivered via GitHub, not wordpress.org.
 * New: a sync now carries the publish date. Before, an update of an existing post reset its date to the time of the import. A future date on a published post makes it a scheduled post on the receiving site, as in WordPress itself.
 * New: WebVTT subtitle files (`.vtt`) travel with the post, e.g. the track of a video block. Update both connected sites: a site on an older version rejects them, so a push to it or a pull by it of a post with a subtitle track fails.
 * Improvement: media blocks (image, video, audio, file, cover, media and text, GenerateBlocks media and image) and `wp-image-N` classes now point at the receiving site's own attachment IDs instead of the sending site's. Not remapped: the legacy `core/gallery` ID list, the `[gallery]` shortcode, the GenerateBlocks v1 background image ID and attachment-page links.
-* Note: the date, the terms and the attachment IDs in media blocks are not part of the content hash, so a difference in them alone does not show a post as changed. The hash of a post with media blocks changes once with this update; a post whose two copies are otherwise equal shows as "In sync (adopted)" afterwards, provided both sites run 1.2.0. A sync never deletes uploads: a file the post no longer references stays in the receiving site's media library.
+* Improvement: the featured image file is part of the content hash, so a post whose only change is a new featured image now shows as changed. The date, the terms and the attachment IDs in media blocks are not part of the hash, so a difference in them alone does not show a post as changed.
+* Note: the content hash of every post changes once with this update. A post whose two copies are otherwise equal shows as "In sync (adopted)" afterwards, provided both sites run 1.2.0. A post changed on one side meanwhile shows as "Diverged" once and needs the force option. A sync never deletes uploads: a file the post no longer references stays in the receiving site's media library.
 
 = 1.1.0 =
 * New: opening an existing page or post for editing now checks the connected site in the background. If the copy there is newer, a notice offers to pull it and reload the editor in one click; if both sides changed since the last sync, the notice says so and points to the Sync tab instead of offering a pull that would discard local work.

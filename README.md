@@ -47,9 +47,9 @@ in both directions, including the upload files they reference.
 - **"Never deleted" covers global classes only.** The GeneratePress color
   palette is replaced as a whole rather than merged, so colors that exist only
   on the target are lost.
-- **The content hash covers title, path, status, content and excerpt.** Post
-  meta, the date, the terms and the attachment IDs in media blocks are not part
-  of it: two copies can report as in sync while their custom fields differ, and
+- **The content hash covers title, path, status, content, excerpt and the
+  featured image file.** Post meta, the date, the terms and the attachment
+  IDs in media blocks are not part of it: two copies can report as in sync while their custom fields differ, and
   meta deleted on the source is not deleted on the target by an import.
 - **Not every attachment ID is remapped.** The legacy `core/gallery` ID list,
   the `[gallery]` shortcode, the GenerateBlocks v1 background image ID
@@ -62,8 +62,7 @@ in both directions, including the upload files they reference.
 - **Update both connected sites.** Sync runs in both directions, and a site on
   a version before 1.2.0 rejects `.vtt` files: a push to it or a pull by it of
   a post with a subtitle track fails. Mixed versions also compute different
-  content hashes for posts with media blocks, so those posts show as changed
-  until both sites run 1.2.0.
+  content hashes, so posts show as changed until both sites run 1.2.0.
 
 ## Pairing
 
