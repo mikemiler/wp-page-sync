@@ -10,6 +10,15 @@ in both directions, including the upload files they reference.
 - Transfers the referenced upload files with the post: images and linked files
   such as PDFs, checksum-verified and re-attached on the receiving side with
   their URLs rewritten to that site's domain and uploads path.
+- Carries the publish date and the categories and tags with the post; they
+  replace the receiving post's categories and tags, so a category or tag that
+  exists only there is removed from the post. Terms are matched by slug;
+  missing ones are created on the receiving site, existing ones are never
+  renamed. A created category sits at the top level: the hierarchy is not
+  carried.
+- Points media blocks (image, video, audio, file, cover, media and text,
+  GenerateBlocks media and image) and `wp-image-N` classes at the receiving
+  site's own attachment IDs.
 - Syncs GenerateBlocks Pro global classes and the GeneratePress color palette.
   Classes that exist only on the target are never deleted.
 - Detects conflicts via content hashes: two copies that differ are reported
@@ -39,12 +48,22 @@ in both directions, including the upload files they reference.
   palette is replaced as a whole rather than merged, so colors that exist only
   on the target are lost.
 - **The content hash covers title, path, status, content and excerpt.** Post
-  meta is not part of it: two copies can report as in sync while their custom
-  fields differ, and meta deleted on the source is not deleted on the target by
-  an import.
+  meta, the date, the terms and the attachment IDs in media blocks are not part
+  of it: two copies can report as in sync while their custom fields differ, and
+  meta deleted on the source is not deleted on the target by an import.
+- **Not every attachment ID is remapped.** The legacy `core/gallery` ID list,
+  the `[gallery]` shortcode, the GenerateBlocks v1 background image ID
+  (`bgImage.id`) and links to attachment pages keep the sending site's IDs.
 - **Single site only.** There is no multisite or network handling.
 - **No deletion propagation.** Deleting a page, post or media file locally never
-  deletes anything on the connected site.
+  deletes anything on the connected site. A file a post stops referencing (for
+  example after switching to a new versioned file name) also stays in the
+  receiving site's media library.
+- **Update both connected sites.** Sync runs in both directions, and a site on
+  a version before 1.2.0 rejects `.vtt` files: a push to it or a pull by it of
+  a post with a subtitle track fails. Mixed versions also compute different
+  content hashes for posts with media blocks, so those posts show as changed
+  until both sites run 1.2.0.
 
 ## Pairing
 

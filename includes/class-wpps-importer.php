@@ -28,6 +28,7 @@ class WPPS_Importer {
 		'pdf'      => 'application/pdf',
 		'mp4'      => 'video/mp4',
 		'webm'     => 'video/webm',
+		'vtt'      => 'text/vtt',
 		'woff2'    => 'font/woff2',
 		'ico'      => 'image/x-icon',
 	);
@@ -240,12 +241,16 @@ class WPPS_Importer {
 	 * size-variant URLs map onto the same-NAMED local size file when the
 	 * regenerated metadata has one, else onto the full-size target URL.
 	 *
+	 * Entries that carry the source attachment_id (1.2.0+ sources) also feed
+	 * the ids map, source attachment ID => target attachment ID.
+	 *
 	 * @param array $manifest Media manifest entries.
-	 * @return array {map: array<string,string>, warnings: string[]}
+	 * @return array {map: array<string,string>, ids: array<int,int>, warnings: string[]}
 	 */
 	public function build_media_map( array $manifest ) {
 		$uploads  = wp_upload_dir( null, false );
 		$map      = array();
+		$ids      = array();
 		$warnings = array();
 
 		foreach ( $manifest as $entry ) {
@@ -261,6 +266,11 @@ class WPPS_Importer {
 				/* translators: %s: uploads-relative file path. */
 				$warnings[] = sprintf( __( 'Media file was not transferred: %s', 'wp-page-sync' ), $rel );
 				continue;
+			}
+
+			$source_id = isset( $entry['attachment_id'] ) ? (int) $entry['attachment_id'] : 0;
+			if ( $source_id > 0 ) {
+				$ids[ $source_id ] = $attachment_id;
 			}
 
 			$final_rel   = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
@@ -284,6 +294,7 @@ class WPPS_Importer {
 
 		return array(
 			'map'      => $map,
+			'ids'      => $ids,
 			'warnings' => $warnings,
 		);
 	}
@@ -311,7 +322,7 @@ class WPPS_Importer {
 			return WPPS_Rewriter::rewrite_env_hosts( $value, $hosts );
 		};
 
-		$content = $rewrite( $post['content'] );
+		$content = WPPS_Rewriter::rewrite_attachment_ids( $rewrite( $post['content'] ), $media['ids'] );
 		$excerpt = $rewrite( $post['excerpt'] );
 		$meta    = WPPS_Rewriter::apply_recursive( $this->validate_bundle_meta( $bundle ), $rewrite );
 
@@ -321,6 +332,7 @@ class WPPS_Importer {
 		}
 
 		$this->apply_meta( $post_id, $meta, $post['template'] );
+		$this->apply_terms( $post_id, $post['post_type'], isset( $bundle['terms'] ) ? $bundle['terms'] : null, $warnings );
 		$this->apply_featured( $post_id, isset( $bundle['featured'] ) ? $bundle['featured'] : null, $warnings );
 		$this->collect_scan_warnings( array_merge( array( $content, $excerpt ), $this->flatten( $meta ) ), $hosts, $warnings );
 
@@ -368,7 +380,24 @@ class WPPS_Importer {
 			'menu_order'  => isset( $post['menu_order'] ) ? (int) $post['menu_order'] : 0,
 			'parent_path' => isset( $post['parent_path'] ) ? (string) $post['parent_path'] : '',
 			'template'    => isset( $post['template'] ) ? sanitize_text_field( (string) $post['template'] ) : '',
+			'date'        => self::valid_datetime( isset( $post['date'] ) ? $post['date'] : '' ),
+			'date_gmt'    => self::valid_datetime( isset( $post['date_gmt'] ) ? $post['date_gmt'] : '' ),
 		);
+	}
+
+	/**
+	 * A MySQL datetime string ("Y-m-d H:i:s") or "" for anything else.
+	 *
+	 * The all-zero value (a draft's unset GMT date) counts as absent.
+	 *
+	 * @param mixed $value Raw bundle value.
+	 * @return string
+	 */
+	private static function valid_datetime( $value ) {
+		if ( ! is_string( $value ) || '0000-00-00 00:00:00' === $value ) {
+			return '';
+		}
+		return preg_match( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value ) ? $value : '';
 	}
 
 	/**
@@ -424,18 +453,21 @@ class WPPS_Importer {
 			}
 		}
 
-		$postarr = array(
-			'post_type'    => $post['post_type'],
-			'post_name'    => $post['slug'],
-			'post_title'   => $post['title'],
-			'post_status'  => $post['status'],
-			'post_content' => $content,
-			'post_excerpt' => $excerpt,
-			'menu_order'   => $post['menu_order'],
-			'post_parent'  => $parent_id,
-		);
-
 		$existing = $this->exporter->find_post( $post['post_type'], $post['path'] );
+
+		$postarr = array_merge(
+			array(
+				'post_type'    => $post['post_type'],
+				'post_name'    => $post['slug'],
+				'post_title'   => $post['title'],
+				'post_status'  => $post['status'],
+				'post_content' => $content,
+				'post_excerpt' => $excerpt,
+				'menu_order'   => $post['menu_order'],
+				'post_parent'  => $parent_id,
+			),
+			$this->post_dates( $post, $existing )
+		);
 		if ( $existing ) {
 			$postarr['ID'] = $existing->ID;
 		}
@@ -459,6 +491,36 @@ class WPPS_Importer {
 		}
 
 		return $post_id;
+	}
+
+	/**
+	 * Date fields for wp_insert_post(): the source GMT date wins (local date
+	 * derived in this site's timezone), else the source local date, else an
+	 * update keeps the existing dates. Without them wp_insert_post() resets
+	 * an updated post's date to "now". A future date on a published post
+	 * turns it into a scheduled ("future") post, as in core.
+	 *
+	 * @param array        $post     Normalized post fields.
+	 * @param WP_Post|null $existing Target post being updated, if any.
+	 * @return array Subset of post_date / post_date_gmt.
+	 */
+	private function post_dates( array $post, $existing ) {
+		if ( '' !== $post['date_gmt'] ) {
+			return array(
+				'post_date'     => get_date_from_gmt( $post['date_gmt'] ),
+				'post_date_gmt' => $post['date_gmt'],
+			);
+		}
+		if ( '' !== $post['date'] ) {
+			return array( 'post_date' => $post['date'] );
+		}
+		if ( $existing ) {
+			return array(
+				'post_date'     => $existing->post_date,
+				'post_date_gmt' => $existing->post_date_gmt,
+			);
+		}
+		return array();
 	}
 
 	/**
@@ -507,6 +569,79 @@ class WPPS_Importer {
 		} else {
 			delete_post_meta( $post_id, '_wp_page_template' );
 		}
+	}
+
+	/**
+	 * Assigns the bundle's terms, matched by slug.
+	 *
+	 * Only syncable taxonomies present in the payload are touched: a bundle
+	 * from a pre-1.2.0 source has no terms key and changes nothing. Missing
+	 * terms are created at the top level; existing terms are never renamed.
+	 * wp_set_object_terms() is used instead of tax_input, which is
+	 * capability-gated and would be dropped for the importer's user 0.
+	 *
+	 * @param int        $post_id   Post ID.
+	 * @param string     $post_type Post type.
+	 * @param array|null $terms     Bundle terms: taxonomy => list of {slug, name}.
+	 * @param string[]   $warnings  Warning collector.
+	 * @return void
+	 */
+	private function apply_terms( $post_id, $post_type, $terms, array &$warnings ) {
+		if ( ! is_array( $terms ) ) {
+			return;
+		}
+		foreach ( array_intersect( WPPS_Exporter::SYNCABLE_TAXONOMIES, get_object_taxonomies( $post_type ) ) as $taxonomy ) {
+			if ( ! isset( $terms[ $taxonomy ] ) || ! is_array( $terms[ $taxonomy ] ) ) {
+				continue;
+			}
+			$term_ids = array();
+			foreach ( $terms[ $taxonomy ] as $term ) {
+				$term_id = is_array( $term ) ? $this->resolve_term( $term, $taxonomy, $warnings ) : 0;
+				if ( $term_id ) {
+					$term_ids[] = $term_id;
+				}
+			}
+			$result = wp_set_object_terms( $post_id, $term_ids, $taxonomy, false );
+			if ( is_wp_error( $result ) ) {
+				/* translators: 1: taxonomy name, 2: error message. */
+				$warnings[] = sprintf( __( 'Terms of %1$s could not be assigned: %2$s', 'wp-page-sync' ), $taxonomy, $result->get_error_message() );
+			}
+		}
+	}
+
+	/**
+	 * Local term ID for a bundle term: existing by slug, else newly created.
+	 *
+	 * @param array    $term     Bundle term {slug, name}.
+	 * @param string   $taxonomy Taxonomy.
+	 * @param string[] $warnings Warning collector.
+	 * @return int 0 when the term is invalid or could not be created.
+	 */
+	private function resolve_term( array $term, $taxonomy, array &$warnings ) {
+		$raw_slug = isset( $term['slug'] ) ? $term['slug'] : '';
+		$raw_name = isset( $term['name'] ) ? $term['name'] : '';
+		if ( ! is_scalar( $raw_slug ) || ! is_scalar( $raw_name ) ) {
+			/* translators: %s: taxonomy name. */
+			$warnings[] = sprintf( __( 'A malformed term of %s was skipped.', 'wp-page-sync' ), $taxonomy );
+			return 0;
+		}
+		$slug = sanitize_title( (string) $raw_slug );
+		if ( '' === $slug ) {
+			return 0;
+		}
+		$existing = get_term_by( 'slug', $slug, $taxonomy );
+		if ( $existing ) {
+			return (int) $existing->term_id;
+		}
+
+		$name    = sanitize_text_field( (string) $raw_name );
+		$created = wp_insert_term( wp_slash( '' !== $name ? $name : $slug ), $taxonomy, array( 'slug' => $slug ) );
+		if ( is_wp_error( $created ) ) {
+			/* translators: 1: term slug, 2: error message. */
+			$warnings[] = sprintf( __( 'Term "%1$s" could not be created: %2$s', 'wp-page-sync' ), $slug, $created->get_error_message() );
+			return 0;
+		}
+		return (int) $created['term_id'];
 	}
 
 	/**

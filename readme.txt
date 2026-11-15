@@ -4,7 +4,7 @@ Tags: sync, migration, staging, media, generateblocks
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,14 +28,31 @@ verifier reports the leftover URL afterwards. A reference written without a host
 (`/wp-content/uploads/…` instead of a full URL) is not recognised at all, so its
 file is neither transferred nor reported.
 
+Along with the content, a post keeps its publish date and its categories and
+tags. They replace the post's categories and tags on the receiving site, so a
+category or tag that exists only there is removed from the post. Terms are
+matched by slug; a missing one is created, an existing one is never renamed. A
+created category always sits at the top level: the category hierarchy is not
+carried.
+
+Media blocks (image, video, audio, file, cover, media and text, GenerateBlocks
+media and image) and `wp-image-N` classes are pointed at the receiving site's
+own attachment IDs. Other attachment ID references keep the sending site's IDs:
+the legacy `core/gallery` ID list, the `[gallery]` shortcode, the GenerateBlocks
+v1 background image ID (`bgImage.id`) and links to attachment pages.
+
+Uploads are never deleted by a sync: when a post references a new file, the
+file it used before stays in the receiving site's media library.
+
 GenerateBlocks Pro global classes and the GeneratePress color palette can be
 pushed or pulled separately. Classes that exist only on the target are never
 deleted. The color palette is the exception to that rule: it is replaced as a
 whole instead of merged, so colors that exist only on the target are lost.
 
 Both copies are compared by a content hash over title, path, status, content and
-excerpt, so the plugin knows whether a post is in sync, changed on one side, or
-changed on both. A conflict is reported instead of silently overwritten, and
+excerpt (the date, the terms and the attachment IDs in media blocks are not
+part of it), so the plugin knows whether a post is in sync, changed on one side,
+or changed on both. A conflict is reported instead of silently overwritten, and
 overwriting requires an explicit confirmation. Post meta is not part of that
 hash: two copies can be reported as in sync while their custom fields differ,
 and meta deleted on the source is not deleted on the target by an import.
@@ -90,6 +107,13 @@ Updates are delivered via GitHub, not wordpress.org.
    unaffected.
 
 == Changelog ==
+
+= 1.2.0 =
+* New: a sync now carries the post's categories and tags and replaces the receiving post's categories and tags with them. They are matched by slug on the receiving site, missing ones are created there at the top level (the category hierarchy is not carried), and existing ones are never renamed. A sending site on an older version sends no terms, so the receiving site leaves them unchanged.
+* New: a sync now carries the publish date. Before, an update of an existing post reset its date to the time of the import. A future date on a published post makes it a scheduled post on the receiving site, as in WordPress itself.
+* New: WebVTT subtitle files (`.vtt`) travel with the post, e.g. the track of a video block. Update both connected sites: a site on an older version rejects them, so a push to it or a pull by it of a post with a subtitle track fails.
+* Improvement: media blocks (image, video, audio, file, cover, media and text, GenerateBlocks media and image) and `wp-image-N` classes now point at the receiving site's own attachment IDs instead of the sending site's. Not remapped: the legacy `core/gallery` ID list, the `[gallery]` shortcode, the GenerateBlocks v1 background image ID and attachment-page links.
+* Note: the date, the terms and the attachment IDs in media blocks are not part of the content hash, so a difference in them alone does not show a post as changed. The hash of a post with media blocks changes once with this update; a post whose two copies are otherwise equal shows as "In sync (adopted)" afterwards, provided both sites run 1.2.0. A sync never deletes uploads: a file the post no longer references stays in the receiving site's media library.
 
 = 1.1.0 =
 * New: opening an existing page or post for editing now checks the connected site in the background. If the copy there is newer, a notice offers to pull it and reload the editor in one click; if both sides changed since the last sync, the notice says so and points to the Sync tab instead of offering a pull that would discard local work.

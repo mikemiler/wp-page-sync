@@ -17,6 +17,13 @@ class WPPS_Exporter {
 	const SYNCABLE_STATUSES   = array( 'publish', 'draft', 'pending', 'private' );
 
 	/**
+	 * Taxonomies whose term assignments travel with a post (by slug).
+	 *
+	 * @var string[]
+	 */
+	const SYNCABLE_TAXONOMIES = array( 'category', 'post_tag' );
+
+	/**
 	 * Meta keys never exported (plan §5). _thumbnail_id → featured,
 	 * _wp_page_template → post.template; the two GenerateBlocks keys are
 	 * post-ID-bound on the source site.
@@ -113,7 +120,9 @@ class WPPS_Exporter {
 	/**
 	 * Content hash (plan §6.4): sha256 over title|path|status|normalized
 	 * content|normalized excerpt. pending counts as draft so hashes stay
-	 * stable across the pending→draft import rule.
+	 * stable across the pending→draft import rule. Attachment IDs in media
+	 * blocks are neutralized: the import remaps them to the receiving site's
+	 * own IDs, so they differ between two otherwise identical copies.
 	 *
 	 * @param string $title   Post title.
 	 * @param string $path    Hierarchical path.
@@ -134,7 +143,7 @@ class WPPS_Exporter {
 					(string) $title,
 					(string) $path,
 					(string) $status,
-					WPPS_Rewriter::normalize( (string) $content, $hosts ),
+					WPPS_Rewriter::normalize( WPPS_Rewriter::neutralize_attachment_ids( $content ), $hosts ),
 					WPPS_Rewriter::normalize( (string) $excerpt, $hosts ),
 				)
 			)
@@ -285,8 +294,11 @@ class WPPS_Exporter {
 				'parent_path'  => $parent_path,
 				'template'     => (string) get_post_meta( $post->ID, '_wp_page_template', true ),
 				'modified_gmt' => $post->post_modified_gmt,
+				'date'         => $post->post_date,
+				'date_gmt'     => $post->post_date_gmt,
 			),
 			'meta'           => $meta,
+			'terms'          => $this->export_terms( $post ),
 			'featured'       => $featured,
 			'media_manifest' => $manifest['manifest'],
 			'source'         => array(
@@ -300,6 +312,31 @@ class WPPS_Exporter {
 				'warnings' => array_merge( $warnings, $manifest['warnings'] ),
 			),
 		);
+	}
+
+	/**
+	 * Term assignments of a post, per syncable taxonomy of its post type.
+	 *
+	 * Every syncable taxonomy of the post type is present, an empty list
+	 * included, so the receiver can tell "no terms" from "not sent".
+	 *
+	 * @param WP_Post $post Post.
+	 * @return array<string, array[]> taxonomy => list of {slug, name}.
+	 */
+	private function export_terms( WP_Post $post ) {
+		$terms = array();
+		foreach ( array_intersect( self::SYNCABLE_TAXONOMIES, get_object_taxonomies( $post->post_type ) ) as $taxonomy ) {
+			$assigned = get_the_terms( $post, $taxonomy );
+			$list     = array();
+			foreach ( is_array( $assigned ) ? $assigned : array() as $term ) {
+				$list[] = array(
+					'slug' => $term->slug,
+					'name' => $term->name,
+				);
+			}
+			$terms[ $taxonomy ] = $list;
+		}
+		return $terms;
 	}
 
 	/**
@@ -448,12 +485,13 @@ class WPPS_Exporter {
 		}
 
 		return array(
-			'source_url' => $uploads['baseurl'] . '/' . $rel,
-			'rel_path'   => $rel,
-			'sha256'     => hash_file( 'sha256', $abs ),
-			'mime'       => $mime,
-			'size'       => (int) filesize( $abs ),
-			'sizes'      => $size,
+			'source_url'    => $uploads['baseurl'] . '/' . $rel,
+			'rel_path'      => $rel,
+			'sha256'        => hash_file( 'sha256', $abs ),
+			'mime'          => $mime,
+			'size'          => (int) filesize( $abs ),
+			'sizes'         => $size,
+			'attachment_id' => $att_id,
 		);
 	}
 }

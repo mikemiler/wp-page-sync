@@ -150,6 +150,79 @@ class WPPS_Rewriter {
 	}
 
 	/**
+	 * Attachment-ID pass: source attachment IDs become target IDs.
+	 *
+	 * Rewrites "id"/"mediaId" in the attribute JSON of media block openers
+	 * (core image, video, audio, file, cover, media-text; GenerateBlocks
+	 * media and image) and wp-image-N classes. One preg_replace_callback over
+	 * the whole string, so an ID that was just written is never mapped a
+	 * second time (source 5 => 9 next to source 9 => 12).
+	 *
+	 * @param string          $subject Post content.
+	 * @param array<int, int> $ids     Source attachment ID => target attachment ID.
+	 * @return string
+	 */
+	public static function rewrite_attachment_ids( $subject, array $ids ) {
+		if ( empty( $ids ) ) {
+			return (string) $subject;
+		}
+		return self::map_attachment_ids(
+			$subject,
+			function ( $id ) use ( $ids ) {
+				return isset( $ids[ (int) $id ] ) ? (string) $ids[ (int) $id ] : $id;
+			}
+		);
+	}
+
+	/**
+	 * Hashing variant of the attachment-ID pass: every ID it covers becomes
+	 * 0, so two copies whose only difference is their site-specific
+	 * attachment IDs hash equal.
+	 *
+	 * @param string $subject Post content.
+	 * @return string
+	 */
+	public static function neutralize_attachment_ids( $subject ) {
+		return self::map_attachment_ids(
+			$subject,
+			function () {
+				return '0';
+			}
+		);
+	}
+
+	/**
+	 * Shared attachment-ID replacement over the allowlisted block openers
+	 * and wp-image-N classes.
+	 *
+	 * @param string   $subject Post content.
+	 * @param callable $map_id  Receives an ID string, returns its replacement.
+	 * @return string
+	 */
+	private static function map_attachment_ids( $subject, callable $map_id ) {
+		$subject = (string) $subject;
+		$result  = preg_replace_callback(
+			'~(<!--\s+wp:(?:(?:core/)?(?:image|video|audio|file|cover|media-text)|generateblocks/(?:media|image))\s+)(\{.*?\})(\s+/?-->)|\bwp-image-(\d+)\b~s',
+			function ( $m ) use ( $map_id ) {
+				if ( isset( $m[4] ) && '' !== $m[4] ) {
+					return 'wp-image-' . $map_id( $m[4] );
+				}
+				$attrs = preg_replace_callback(
+					'~"(id|mediaId)":(\d+)~',
+					function ( $attr ) use ( $map_id ) {
+						return '"' . $attr[1] . '":' . $map_id( $attr[2] );
+					},
+					$m[2]
+				);
+				return $m[1] . $attrs . $m[3];
+			},
+			$subject
+		);
+
+		return ( null !== $result ) ? $result : $subject;
+	}
+
+	/**
 	 * Env-host pass: absolute/protocol-relative env-host URLs become relative.
 	 *
 	 * Uploads URLs are deliberately left untouched (a foreign uploads URL
