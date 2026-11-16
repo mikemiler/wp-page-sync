@@ -97,6 +97,40 @@ class WPPS_Exporter {
 	}
 
 	/**
+	 * Moves URLs on every other known environment host onto this site's own
+	 * host, recursively over all strings of a value (export side).
+	 *
+	 * A peer of this site is not necessarily a peer of the receiver: a local
+	 * site may know LIVE while pushing to DEV, which does not. Without this
+	 * pass, a LIVE uploads URL would miss the manifest's source_url keys and
+	 * a LIVE page link would stay absolute on DEV, invisible to its scan.
+	 * The hashes are unaffected: they normalize every known host to
+	 * relative paths anyway. Uploads URLs move only when the own uploads
+	 * base URL is <origin>/wp-content/uploads: the manifest keys use that
+	 * base URL, so on an offload/CDN or custom upload_url_path site a moved
+	 * uploads URL would match nothing on the receiver and point nowhere,
+	 * while the untouched one still loads from the other site.
+	 *
+	 * @param mixed $value String or array (meta, style data).
+	 * @return mixed Same shape.
+	 */
+	public function rehost_foreign( $value ) {
+		$hosts        = $this->foreign_hosts();
+		$parts        = wp_parse_url( home_url() );
+		$origin       = ( isset( $parts['scheme'] ) ? $parts['scheme'] : 'https' ) . '://'
+			. ( isset( $parts['host'] ) ? $parts['host'] : '' )
+			. ( isset( $parts['port'] ) ? ':' . $parts['port'] : '' );
+		$keep_uploads = untrailingslashit( wp_upload_dir( null, false )['baseurl'] ) !== $origin . '/wp-content/uploads';
+
+		return WPPS_Rewriter::apply_recursive(
+			$value,
+			function ( $subject ) use ( $hosts, $origin, $keep_uploads ) {
+				return WPPS_Rewriter::rehost( $subject, $hosts, $origin, $keep_uploads );
+			}
+		);
+	}
+
+	/**
 	 * Finds a post by hierarchical path, validating type and skipping trash.
 	 *
 	 * Array post type on purpose: a string post type makes get_page_by_path()
@@ -279,13 +313,22 @@ class WPPS_Exporter {
 			$warnings[] = __( 'Status "pending" is synced as "draft" (a pending import would lose its slug).', 'wp-page-sync' );
 		}
 
-		$meta         = $this->export_meta( $post->ID );
+		// Other env hosts onto the own host first, so the manifest and the
+		// receiver see them as source-host URLs (see rehost_foreign()).
+		$texts        = $this->rehost_foreign(
+			array(
+				'content' => (string) $post->post_content,
+				'excerpt' => (string) $post->post_excerpt,
+				'meta'    => $this->export_meta( $post->ID ),
+			)
+		);
+		$meta         = $texts['meta'];
 		$meta_strings = array();
 		WPPS_Rewriter::collect_strings( $meta, $meta_strings );
 
 		$featured = $this->export_featured( $post->ID );
 		$manifest = $this->build_manifest(
-			array_merge( array( $post->post_content, $post->post_excerpt ), $meta_strings ),
+			array_merge( array( $texts['content'], $texts['excerpt'] ), $meta_strings ),
 			$featured ? array( $featured['rel_path'] ) : array()
 		);
 
@@ -298,8 +341,8 @@ class WPPS_Exporter {
 				'slug'           => $post->post_name,
 				'title'          => $post->post_title,
 				'status'         => $status,
-				'content'        => $post->post_content,
-				'excerpt'        => $post->post_excerpt,
+				'content'        => $texts['content'],
+				'excerpt'        => $texts['excerpt'],
 				'menu_order'     => (int) $post->menu_order,
 				'parent_path'    => $parent_path,
 				'template'       => (string) get_post_meta( $post->ID, '_wp_page_template', true ),

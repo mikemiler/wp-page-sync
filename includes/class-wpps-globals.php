@@ -100,6 +100,13 @@ class WPPS_Globals {
 		$styles = $this->export_styles();
 		$colors = $this->global_colors();
 
+		// Same host pass as a post bundle (WPPS_Exporter::rehost_foreign()).
+		foreach ( $styles as $index => $style ) {
+			$rehosted                 = $this->exporter->rehost_foreign( array( $style['css'], $style['data'] ) );
+			$styles[ $index ]['css']  = $rehosted[0];
+			$styles[ $index ]['data'] = $rehosted[1];
+		}
+
 		$strings = array();
 		foreach ( $styles as $style ) {
 			$strings[] = $style['css'];

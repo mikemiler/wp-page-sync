@@ -305,6 +305,57 @@ class WPPS_Rewriter {
 	}
 
 	/**
+	 * Export pass: points URLs on the given env hosts at another origin.
+	 *
+	 * The exporter moves URLs on every other known environment host onto its
+	 * own host, so the receiver treats them exactly like source-host URLs:
+	 * the manifest's source_url keys (own uploads baseurl) match them, and the
+	 * receiver's env pass (which knows the source host, but not necessarily
+	 * the source's other peers) makes the rest relative. Only scheme, host
+	 * and port change; the path stays as found, in all three forms (plain,
+	 * JSON-escaped, protocol-relative). Namespace hosts are skipped.
+	 *
+	 * @param string   $subject      Content string.
+	 * @param string[] $hosts        Bare env hosts to move.
+	 * @param string   $origin       Target origin, "scheme://host[:port]".
+	 * @param bool     $keep_uploads Leave /wp-content/uploads/ URLs untouched
+	 *                               (the own uploads base URL is elsewhere, so
+	 *                               a moved URL would match no manifest key).
+	 * @return string
+	 */
+	public static function rehost( $subject, array $hosts, $origin, $keep_uploads = false ) {
+		$subject  = (string) $subject;
+		$relative = (string) preg_replace( '~^https?:~i', '', $origin );
+
+		foreach ( $hosts as $host ) {
+			if ( in_array( $host, self::NAMESPACE_HOSTS, true ) ) {
+				continue;
+			}
+			$result = preg_replace_callback(
+				self::host_url_regex( $host ),
+				function ( $matched ) use ( $origin, $relative, $keep_uploads ) {
+					$path = isset( $matched[1] ) ? $matched[1] : '';
+					if ( $keep_uploads && 0 === strpos( str_replace( '\/', '/', $path ), '/wp-content/uploads/' ) ) {
+						return $matched[0];
+					}
+					$prefix = substr( $matched[0], 0, strlen( $matched[0] ) - strlen( $path ) );
+					$target = preg_match( '~^https?:~i', $prefix ) ? $origin : $relative;
+					if ( false !== strpos( $prefix, '\/' ) ) {
+						$target = str_replace( '/', '\/', $target );
+					}
+					return $target . $path;
+				},
+				$subject
+			);
+			if ( null !== $result ) {
+				$subject = $result;
+			}
+		}
+
+		return $subject;
+	}
+
+	/**
 	 * Hashing normalization: ALL env-host URLs (uploads included) → relative.
 	 *
 	 * @param string   $subject Content string.
