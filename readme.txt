@@ -4,7 +4,7 @@ Tags: sync, migration, staging, media, generateblocks
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.5.0
+Stable tag: 1.6.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -126,6 +126,9 @@ Updates are delivered via GitHub, not wordpress.org.
    unaffected.
 
 == Changelog ==
+
+= 1.6.0 =
+* New: a bulk push asks in the plugin's own dialog instead of a browser prompt. It says how many posts will be pushed (parents first) and lists the selected posts whose copy on the peer differs, with their status. One option overwrites all of these at once; the copy on the peer is saved as a post revision first, as with a single forced push. Without the option they are skipped and listed as before. Only the posts listed in the dialog can be overwritten: a post that became a conflict after the list was loaded is still skipped.
 
 = 1.5.0 =
 * New: edit the HTTP Basic Auth of an existing connection. Each row under Connected sites shows whether Basic Auth is on (with its username) and has a "Basic Auth" button: fill in both fields to set or replace the credentials, leave both empty to remove them. Saving pings the site right away, so a wrong password shows at once. The password is never shown again. Disconnecting and connecting again is no longer needed, for example when a site gets password protection after it was paired.

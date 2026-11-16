@@ -154,6 +154,8 @@ class WPPS_Admin {
 				'nonce'       => wp_create_nonce( self::NONCE_ACTION ),
 				'verifyBatch' => 10,
 				'statuses'    => self::status_labels(),
+				// Single source for the bulk dialog's conflict list.
+				'forcePush'   => WPPS_Sync::FORCE_PUSH,
 				'i18n'        => array(
 					'copied'            => __( 'Key copied to clipboard.', 'wp-page-sync' ),
 					'copyFailed'        => __( 'Copy failed. Select the key and copy it manually.', 'wp-page-sync' ),
@@ -187,13 +189,17 @@ class WPPS_Admin {
 					'forceLabel'        => __( 'Force: the copy on the target differs from this one and will be overwritten. Its current title, content and excerpt are saved there as a post revision first, unless that site has revisions switched off or its post type does not support them.', 'wp-page-sync' ),
 					'preflightErrors'   => __( 'Blocking problems (fix at the source first):', 'wp-page-sync' ),
 					'warnings'          => __( 'Warnings:', 'wp-page-sync' ),
-					'bulkConfirm'       => __( 'Push the selected posts (parents first)? Conflicting posts are skipped.', 'wp-page-sync' ),
+					'bulkTitle'         => __( 'Push selected posts', 'wp-page-sync' ),
+					/* translators: %1$s: number of selected posts. */
+					'bulkIntro'         => __( 'Posts selected: %1$s. They are pushed to the peer parents first.', 'wp-page-sync' ),
+					'bulkConflicts'     => __( 'These posts differ on the peer and are skipped unless you tick the option below:', 'wp-page-sync' ),
+					'bulkForceLabel'    => __( 'Force: overwrite the posts listed above on the peer. The current title, content and excerpt of each are saved there as a post revision first, unless that site has revisions switched off or its post type does not support them.', 'wp-page-sync' ),
 					'bulkNone'          => __( 'Select at least one post.', 'wp-page-sync' ),
 					'bulkDone'          => __( 'Bulk push finished:', 'wp-page-sync' ),
 					'pushed'            => __( 'pushed', 'wp-page-sync' ),
 					'skipped'           => __( 'skipped', 'wp-page-sync' ),
 					'failed'            => __( 'failed', 'wp-page-sync' ),
-					'bulkSkipped'       => __( 'Skipped as conflicts (push each one on its own and confirm the force option):', 'wp-page-sync' ),
+					'bulkSkipped'       => __( 'Skipped as conflicts (to overwrite them, select them again and tick the force option in the bulk dialog, or push each one on its own):', 'wp-page-sync' ),
 					'bulkFailed'        => __( 'Failed:', 'wp-page-sync' ),
 					'bulkWarnings'      => __( 'Pushed with warnings:', 'wp-page-sync' ),
 					'bulkRunning'       => __( 'A bulk push is still running. Wait for it to finish before syncing a single post.', 'wp-page-sync' ),

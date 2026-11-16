@@ -8,7 +8,7 @@
  * Plugin Name:       WP Page Sync
  * Plugin URI:        https://github.com/mikemiler/wp-page-sync
  * Description:       Syncs pages and posts, including their media files and GenerateBlocks global styles, between two WordPress installs over a signed connection.
- * Version:           1.5.0
+ * Version:           1.6.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            WP Mike
@@ -21,7 +21,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPPS_VERSION', '1.5.0' );
+define( 'WPPS_VERSION', '1.6.0' );
 define( 'WPPS_PLUGIN_FILE', __FILE__ );
 define( 'WPPS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPPS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
