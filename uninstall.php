@@ -1,9 +1,10 @@
 <?php
 /**
  * Uninstall cleanup: removes all wpps_* options, the per-peer sync state and
- * media checksum postmeta, and, best effort, the replay-protection nonce
- * transients (they expire on their own otherwise; with an external object
- * cache they live outside the options table and simply expire there).
+ * media checksum postmeta, the uploads/wpps-tmp staging folder and, best
+ * effort, the replay-protection nonce transients (they expire on their own
+ * otherwise; with an external object cache they live outside the options
+ * table and simply expire there).
  *
  * @package WP_Page_Sync
  */
@@ -35,3 +36,18 @@ $wpdb->query(
 	)
 );
 // phpcs:enable WordPress.DB.DirectDatabaseQuery
+
+// Staging folder for files in transit: only the files the plugin creates
+// there (*.part plus the two guard files), and the folder only once empty.
+$wpps_temp_dir = wp_upload_dir( null, false )['basedir'] . '/wpps-tmp';
+if ( is_dir( $wpps_temp_dir ) ) {
+	$wpps_temp_files = array_merge( (array) glob( $wpps_temp_dir . '/*.part' ), array( $wpps_temp_dir . '/.htaccess', $wpps_temp_dir . '/index.html' ) );
+	foreach ( $wpps_temp_files as $wpps_temp_file ) {
+		if ( is_string( $wpps_temp_file ) && is_file( $wpps_temp_file ) ) {
+			wp_delete_file( $wpps_temp_file );
+		}
+	}
+	if ( array( '.', '..' ) === array_values( (array) scandir( $wpps_temp_dir ) ) ) {
+		rmdir( $wpps_temp_dir ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir -- removing the plugin's own staging folder once it is empty.
+	}
+}

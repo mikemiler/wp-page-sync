@@ -8,7 +8,7 @@
  * Plugin Name:       WP Page Sync
  * Plugin URI:        https://github.com/mikemiler/wp-page-sync
  * Description:       Syncs pages and posts, including their media files and GenerateBlocks global styles, between two WordPress installs over a signed connection.
- * Version:           1.2.0
+ * Version:           1.3.0
  * Requires at least: 6.0
  * Requires PHP:      7.4
  * Author:            WP Mike
@@ -21,17 +21,27 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'WPPS_VERSION', '1.2.0' );
+define( 'WPPS_VERSION', '1.3.0' );
 define( 'WPPS_PLUGIN_FILE', __FILE__ );
 define( 'WPPS_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'WPPS_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'WPPS_REST_NS', 'wp-page-sync/v1' );
 
 /*
- * Design values from the approved plan (§3). WPPS_MAX_FILE_BYTES is an upper
- * bound only; the effective limit is the server's post_max_size.
+ * Media transfer sizes (1.3.0 design values, chosen, not measured on any
+ * server):
+ * - WPPS_MAX_FILE_BYTES: largest single file a sync transfers. Push and pull
+ *   both stream in pieces, so it bounds disk use and transfer time, not
+ *   memory. Larger files are a blocking pre-flight error.
+ * - WPPS_CHUNK_BYTES: body of one signed upload chunk. Kept far below PHP's
+ *   default post_max_size (8 MB) and no larger than nginx's default
+ *   client_max_body_size (1 MB), so a receiver with stock limits accepts it.
+ * - WPPS_MAX_BODY_BYTES: upper bound for any signed request body (DoS guard
+ *   before hashing): JSON bundles and the pre-1.3.0 single-request upload.
  */
-define( 'WPPS_MAX_FILE_BYTES', 64 * 1024 * 1024 );
+define( 'WPPS_MAX_FILE_BYTES', 256 * 1024 * 1024 );
+define( 'WPPS_CHUNK_BYTES', 1024 * 1024 );
+define( 'WPPS_MAX_BODY_BYTES', 64 * 1024 * 1024 );
 define( 'WPPS_TS_WINDOW', 300 );
 define( 'WPPS_NONCE_TTL', 600 );
 define( 'WPPS_KEY_TTL', 3600 );
@@ -62,6 +72,24 @@ define( 'WPPS_LOG_MAX', 50 );
 function wpps_save_option( $name, $value ) {
 	if ( ! add_option( $name, $value, '', 'no' ) ) {
 		update_option( $name, $value );
+	}
+}
+
+/**
+ * Raises PHP's memory and time limits for a long sync request.
+ *
+ * Called by the sync AJAX handlers and after every authenticated REST
+ * request: a sync hashes and moves whole media files and may run many
+ * signed requests in a row. The memory limit goes to WP_MAX_MEMORY_LIMIT
+ * (filterable via wpps_memory_limit). The time limit is lifted only where
+ * PHP allows it; a host-level limit (PHP-FPM, proxy timeouts) still applies.
+ *
+ * @return void
+ */
+function wpps_raise_limits() {
+	wp_raise_memory_limit( 'wpps' );
+	if ( function_exists( 'set_time_limit' ) && wp_is_ini_value_changeable( 'max_execution_time' ) ) {
+		set_time_limit( 0 );
 	}
 }
 

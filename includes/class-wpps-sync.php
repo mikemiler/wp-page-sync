@@ -422,13 +422,14 @@ class WPPS_Sync {
 			isset( $response['hash'] ) ? (string) $response['hash'] : ''
 		);
 
+		$warnings = $this->merge_warnings( $transfer['warnings'], $response );
 		/* translators: 1: post path, 2: peer name, 3: number of transferred files. */
-		WPPS_Log::add( 'push', sprintf( __( 'Pushed %1$s to %2$s (%3$d media files transferred).', 'wp-page-sync' ), $path, $peer['name'], $transfer['files'] ) );
+		WPPS_Log::add( 'push', sprintf( __( 'Pushed %1$s to %2$s (%3$d media files transferred).', 'wp-page-sync' ), $path, $peer['name'], $transfer['files'] ), $warnings );
 
 		return array(
 			'message'  => __( 'Pushed.', 'wp-page-sync' ),
 			'url'      => isset( $response['url'] ) ? (string) $response['url'] : '',
-			'warnings' => $this->merge_warnings( $transfer['warnings'], $response ),
+			'warnings' => $warnings,
 		);
 	}
 
@@ -473,13 +474,14 @@ class WPPS_Sync {
 			(string) $bundle['source']['hash']
 		);
 
+		$warnings = array_merge( $fetched['warnings'], $result['warnings'] );
 		/* translators: 1: post path, 2: peer name, 3: number of transferred files. */
-		WPPS_Log::add( 'pull', sprintf( __( 'Pulled %1$s from %2$s (%3$d media files transferred).', 'wp-page-sync' ), $path, $peer['name'], $fetched['files'] ) );
+		WPPS_Log::add( 'pull', sprintf( __( 'Pulled %1$s from %2$s (%3$d media files transferred).', 'wp-page-sync' ), $path, $peer['name'], $fetched['files'] ), $warnings );
 
 		return array(
 			'message'  => __( 'Pulled.', 'wp-page-sync' ),
 			'url'      => (string) $result['url'],
-			'warnings' => array_merge( $fetched['warnings'], $result['warnings'] ),
+			'warnings' => $warnings,
 		);
 	}
 
@@ -515,13 +517,26 @@ class WPPS_Sync {
 				'direction' => $direction,
 				'media'     => $media,
 				'in_sync'   => isset( $peer_bundle['hash'] ) && (string) $peer_bundle['hash'] === (string) $local['hash'],
-				'preflight' => ( 'push' === $direction )
-					? $local['preflight']
-					: ( ( isset( $peer_bundle['preflight'] ) && is_array( $peer_bundle['preflight'] ) ) ? $peer_bundle['preflight'] : array(
-						'errors'   => array(),
-						'warnings' => array(),
-					) ),
+				'preflight' => ( 'push' === $direction ) ? $local['preflight'] : $this->pull_globals_preflight( $peer_bundle ),
 			)
+		);
+	}
+
+	/**
+	 * Pre-flight of a globals pull: the peer's own report plus files above
+	 * this site's size limit.
+	 *
+	 * @param array $peer_bundle Peer globals bundle.
+	 * @return array {errors, warnings}
+	 */
+	private function pull_globals_preflight( array $peer_bundle ) {
+		$preflight = ( isset( $peer_bundle['preflight'] ) && is_array( $peer_bundle['preflight'] ) ) ? $peer_bundle['preflight'] : array();
+		$errors    = ( isset( $preflight['errors'] ) && is_array( $preflight['errors'] ) ) ? $preflight['errors'] : array();
+		$manifest  = ( isset( $peer_bundle['media_manifest'] ) && is_array( $peer_bundle['media_manifest'] ) ) ? $peer_bundle['media_manifest'] : array();
+
+		return array(
+			'errors'   => array_merge( $errors, $this->oversize_errors( $manifest ) ),
+			'warnings' => ( isset( $preflight['warnings'] ) && is_array( $preflight['warnings'] ) ) ? $preflight['warnings'] : array(),
 		);
 	}
 
@@ -546,8 +561,9 @@ class WPPS_Sync {
 			if ( is_wp_error( $result ) ) {
 				return $this->log_failure( 'globals_push', 'globals', $peer, $result );
 			}
+			$result['warnings'] = $this->merge_warnings( $transfer['warnings'], $result );
 			/* translators: %s: peer name. */
-			WPPS_Log::add( 'globals_push', sprintf( __( 'Pushed global styles to %s.', 'wp-page-sync' ), $peer['name'] ) );
+			WPPS_Log::add( 'globals_push', sprintf( __( 'Pushed global styles to %s.', 'wp-page-sync' ), $peer['name'] ), $result['warnings'] );
 			return $result;
 		}
 
@@ -562,7 +578,7 @@ class WPPS_Sync {
 		$result             = $this->globals->import( $bundle );
 		$result['warnings'] = array_merge( $fetched['warnings'], $result['warnings'] );
 		/* translators: %s: peer name. */
-		WPPS_Log::add( 'globals_pull', sprintf( __( 'Pulled global styles from %s.', 'wp-page-sync' ), $peer['name'] ) );
+		WPPS_Log::add( 'globals_pull', sprintf( __( 'Pulled global styles from %s.', 'wp-page-sync' ), $peer['name'] ), $result['warnings'] );
 
 		return $result;
 	}
@@ -600,7 +616,31 @@ class WPPS_Sync {
 				'warnings' => array(),
 			);
 		}
+		$bundle['preflight']['errors'] = array_merge(
+			isset( $bundle['preflight']['errors'] ) && is_array( $bundle['preflight']['errors'] ) ? $bundle['preflight']['errors'] : array(),
+			$this->oversize_errors( $bundle['media_manifest'] )
+		);
 		return $bundle;
+	}
+
+	/**
+	 * Pre-flight errors for manifest files above this site's size limit.
+	 *
+	 * The sending site checks its own limit already; this covers a pull
+	 * from a peer before 1.3.0 (no check) or one with a larger limit.
+	 *
+	 * @param array $manifest Peer-supplied media manifest.
+	 * @return string[]
+	 */
+	private function oversize_errors( array $manifest ) {
+		$errors = array();
+		foreach ( $manifest as $entry ) {
+			$size = ( is_array( $entry ) && isset( $entry['size'] ) ) ? (int) $entry['size'] : 0;
+			if ( $size > WPPS_MAX_FILE_BYTES ) {
+				$errors[] = WPPS_Importer::too_large_message( isset( $entry['rel_path'] ) ? (string) $entry['rel_path'] : '', $size );
+			}
+		}
+		return $errors;
 	}
 
 	/**
@@ -618,6 +658,10 @@ class WPPS_Sync {
 			return new WP_Error( 'wpps_invalid_bundle', __( 'The peer returned an invalid globals bundle.', 'wp-page-sync' ) );
 		}
 		$bundle['media_manifest'] = ( isset( $bundle['media_manifest'] ) && is_array( $bundle['media_manifest'] ) ) ? $bundle['media_manifest'] : array();
+		$oversize                 = $this->oversize_errors( $bundle['media_manifest'] );
+		if ( $oversize ) {
+			return new WP_Error( 'wpps_preflight', implode( ' ', $oversize ) );
+		}
 		return $bundle;
 	}
 
@@ -738,11 +782,19 @@ class WPPS_Sync {
 		foreach ( $manifest as $entry ) {
 			$rel = ( is_array( $entry ) && isset( $entry['rel_path'] ) ) ? (string) $entry['rel_path'] : '';
 			$sha = ( is_array( $entry ) && isset( $entry['sha256'] ) ) ? (string) $entry['sha256'] : '';
-			if ( '' === $rel || ! preg_match( '/^[0-9a-f]{64}$/', $sha ) ) {
+			if ( '' === $rel || ! preg_match( '/^[0-9a-f]{64}$/D', $sha ) ) {
 				return new WP_Error(
 					'wpps_invalid_manifest',
 					/* translators: %s: uploads-relative file path, or a placeholder when the entry carries none. */
 					sprintf( __( 'The media manifest is incomplete: the entry for %s has no usable file path or checksum.', 'wp-page-sync' ), ( '' !== $rel ) ? $rel : __( '(unnamed file)', 'wp-page-sync' ) )
+				);
+			}
+			// A pull manifest is peer-supplied: nothing outside the transfer rules is ever downloaded.
+			if ( ! WPPS_Importer::validate_rel_path( $rel ) || ! WPPS_Importer::allowed_extension( $rel ) ) {
+				return new WP_Error(
+					'wpps_invalid_manifest',
+					/* translators: %s: uploads-relative file path. */
+					sprintf( __( 'The media manifest names a file outside the transfer rules: %s', 'wp-page-sync' ), $rel )
 				);
 			}
 			$by_rel[ $rel ] = $entry;
@@ -801,28 +853,9 @@ class WPPS_Sync {
 			return $diff;
 		}
 
-		$basedir  = wp_upload_dir( null, false )['basedir'];
 		$warnings = array();
 		foreach ( $diff['needed'] as $rel ) {
-			$entry = $by_rel[ $rel ];
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- reading a manifest-verified uploads file for transfer.
-			$binary = file_get_contents( $basedir . '/' . $rel );
-			if ( false === $binary ) {
-				/* translators: %s: uploads-relative file path. */
-				return new WP_Error( 'wpps_read_failed', sprintf( __( 'Could not read %s for transfer.', 'wp-page-sync' ), $rel ) );
-			}
-			$response = $this->client->request(
-				$peer,
-				'POST',
-				'/' . WPPS_REST_NS . '/media-upload',
-				array(
-					'rel_path' => $rel,
-					'sha256'   => (string) $entry['sha256'],
-					'mime'     => isset( $entry['mime'] ) ? (string) $entry['mime'] : 'application/octet-stream',
-				),
-				$binary,
-				WPPS_TIMEOUT_MEDIA
-			);
+			$response = $this->upload_file( $peer, $rel, (string) $by_rel[ $rel ]['sha256'] );
 			if ( is_wp_error( $response ) ) {
 				/* translators: 1: file path, 2: error message. */
 				return new WP_Error( 'wpps_upload_failed', sprintf( __( 'Uploading %1$s failed: %2$s', 'wp-page-sync' ), $rel, $response->get_error_message() ) );
@@ -837,8 +870,74 @@ class WPPS_Sync {
 	}
 
 	/**
+	 * Sends one uploads file to the peer as signed WPPS_CHUNK_BYTES pieces
+	 * (POST /media-chunk), reading it piece by piece so it never sits in
+	 * memory as a whole. Each piece carries the path, its offset, the total
+	 * size and the file's sha256; the peer verifies size and checksum after
+	 * the last one.
+	 *
+	 * A 404 on the first piece means the peer has no /media-chunk route: it
+	 * runs a version before 1.3.0.
+	 *
+	 * @param array  $peer   Peer record.
+	 * @param string $rel    Uploads-relative path.
+	 * @param string $sha256 sha256 from the manifest.
+	 * @return array|WP_Error The peer's import result (after the last piece).
+	 */
+	private function upload_file( array $peer, $rel, $sha256 ) {
+		$abs   = wp_upload_dir( null, false )['basedir'] . '/' . $rel;
+		$total = is_file( $abs ) ? (int) filesize( $abs ) : 0;
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- streaming a manifest-verified uploads file in pieces.
+		$handle = ( $total > 0 ) ? fopen( $abs, 'rb' ) : false;
+		if ( false === $handle ) {
+			/* translators: %s: uploads-relative file path. */
+			return new WP_Error( 'wpps_read_failed', sprintf( __( 'Could not read %s for transfer.', 'wp-page-sync' ), $rel ) );
+		}
+
+		$type  = wp_check_filetype( wp_basename( $rel ), WPPS_Importer::ALLOWED_MIMES );
+		$query = array(
+			'rel_path'  => $rel,
+			'sha256'    => $sha256,
+			'mime'      => $type['type'] ? $type['type'] : 'application/octet-stream',
+			'upload_id' => bin2hex( random_bytes( 16 ) ),
+			'total'     => (string) $total,
+		);
+
+		$offset   = 0;
+		$response = array();
+		try {
+			while ( $offset < $total ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- see fopen above.
+				$bytes = fread( $handle, WPPS_CHUNK_BYTES );
+				if ( false === $bytes || '' === $bytes ) {
+					/* translators: %s: uploads-relative file path. */
+					return new WP_Error( 'wpps_read_failed', sprintf( __( 'Could not read %s for transfer.', 'wp-page-sync' ), $rel ) );
+				}
+				$query['offset'] = (string) $offset;
+				$response        = $this->client->request( $peer, 'POST', '/' . WPPS_REST_NS . '/media-chunk', $query, $bytes, WPPS_TIMEOUT_MEDIA );
+				if ( is_wp_error( $response ) ) {
+					return ( 0 === $offset && 'wpps_http_404' === $response->get_error_code() )
+						? new WP_Error( 'wpps_peer_outdated', __( 'The connected site runs an older WP Page Sync without piecewise file upload. Update WP Page Sync on the connected site to 1.3.0 or later, then sync again.', 'wp-page-sync' ) )
+						: $response;
+				}
+				$offset += strlen( $bytes );
+			}
+		} finally {
+			fclose( $handle ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- see fopen above.
+		}
+
+		return $response;
+	}
+
+	/**
 	 * Downloads the missing/different manifest files from the peer and
 	 * imports them locally.
+	 *
+	 * Each file streams into a temp file inside uploads (never into memory)
+	 * and goes through import_media(), which verifies its size and sha256
+	 * and consumes the temp file. The timeout grows with the file: a pull
+	 * gets the same time per WPPS_CHUNK_BYTES that a chunked push gives each
+	 * piece.
 	 *
 	 * @param array $peer     Peer record.
 	 * @param array $manifest Media manifest.
@@ -853,13 +952,25 @@ class WPPS_Sync {
 
 		$warnings = array();
 		foreach ( $diff['needed'] as $rel ) {
-			$entry    = $by_rel[ $rel ];
-			$download = $this->client->download( $peer, '/' . WPPS_REST_NS . '/media-file', array( 'rel_path' => $rel ), WPPS_TIMEOUT_MEDIA );
+			$entry = $by_rel[ $rel ];
+			$temp  = WPPS_Importer::temp_file();
+			if ( is_wp_error( $temp ) ) {
+				return $temp;
+			}
+			// Peer-supplied: clamped before it scales the timeout.
+			$size     = isset( $entry['size'] ) ? min( max( 0, (int) $entry['size'] ), WPPS_MAX_FILE_BYTES ) : 0;
+			$timeout  = max( 1, (int) ceil( $size / WPPS_CHUNK_BYTES ) ) * WPPS_TIMEOUT_MEDIA;
+			$download = $this->client->download_to_file( $peer, '/' . WPPS_REST_NS . '/media-file', array( 'rel_path' => $rel ), $temp, $timeout );
+			clearstatcache( true, $temp );
+			if ( ! is_wp_error( $download ) && $size > 0 && (int) filesize( $temp ) !== $size ) {
+				$download = new WP_Error( 'wpps_size_mismatch', __( 'The downloaded file does not have the size the peer announced.', 'wp-page-sync' ) );
+			}
 			if ( is_wp_error( $download ) ) {
+				WPPS_Importer::discard( $temp );
 				/* translators: 1: file path, 2: error message. */
 				return new WP_Error( 'wpps_download_failed', sprintf( __( 'Downloading %1$s failed: %2$s', 'wp-page-sync' ), $rel, $download->get_error_message() ) );
 			}
-			$result = $this->importer->import_media( $rel, (string) $entry['sha256'], isset( $entry['mime'] ) ? (string) $entry['mime'] : '', $download['body'] );
+			$result = $this->importer->import_media( $rel, (string) $entry['sha256'], $temp );
 			if ( is_wp_error( $result ) ) {
 				/* translators: 1: file path, 2: error message. */
 				return new WP_Error( 'wpps_import_failed', sprintf( __( 'Importing %1$s failed: %2$s', 'wp-page-sync' ), $rel, $result->get_error_message() ) );

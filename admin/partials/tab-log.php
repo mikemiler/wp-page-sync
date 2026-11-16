@@ -29,7 +29,18 @@ defined( 'ABSPATH' ) || exit;
 				<tr>
 					<td><?php echo esc_html( wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $entry['time'] ) ); ?></td>
 					<td><code><?php echo esc_html( $entry['type'] ); ?></code></td>
-					<td><?php echo esc_html( $entry['message'] ); ?></td>
+					<td>
+						<?php echo esc_html( $entry['message'] ); ?>
+						<?php if ( ! empty( $entry['warnings'] ) && is_array( $entry['warnings'] ) ) : ?>
+							<div class="wpps-report-warnings">
+								<ul>
+									<?php foreach ( $entry['warnings'] as $warning ) : ?>
+										<li><?php echo esc_html( (string) $warning ); ?></li>
+									<?php endforeach; ?>
+								</ul>
+							</div>
+						<?php endif; ?>
+					</td>
 				</tr>
 			<?php endforeach; ?>
 		<?php endif; ?>

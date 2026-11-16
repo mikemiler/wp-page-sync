@@ -39,20 +39,27 @@ class WPPS_Client {
 	}
 
 	/**
-	 * Signed GET returning the raw response body (the /media-file route
-	 * answers with binary file content, not JSON).
+	 * Signed GET that streams the response body into a file (the
+	 * /media-file route answers with binary file content, not JSON), so a
+	 * large file never sits in memory. The body is capped at
+	 * WPPS_MAX_FILE_BYTES; a longer one arrives truncated and fails the
+	 * caller's sha256 check.
 	 *
 	 * @param array    $peer    Peer record.
 	 * @param string   $route   REST route incl. namespace.
 	 * @param array    $query   Query args as key => value.
+	 * @param string   $file    Absolute path of the file to write.
 	 * @param int|null $timeout Timeout in seconds.
-	 * @return array|WP_Error {body: string, sha256: string} on 200.
+	 * @return true|WP_Error True on 200; the file holds the body.
 	 */
-	public function download( array $peer, $route, array $query = array(), $timeout = null ) {
+	public function download_to_file( array $peer, $route, array $query, $file, $timeout = null ) {
 		$prepared = $this->prepare( $peer, 'GET', $route, $query, null, $timeout );
 		if ( is_wp_error( $prepared ) ) {
 			return $prepared;
 		}
+		$prepared['args']['stream']              = true;
+		$prepared['args']['filename']            = $file;
+		$prepared['args']['limit_response_size'] = WPPS_MAX_FILE_BYTES;
 
 		$response = $this->send( $prepared );
 		if ( is_wp_error( $response ) ) {
@@ -60,19 +67,17 @@ class WPPS_Client {
 		}
 
 		$code = (int) wp_remote_retrieve_response_code( $response );
-		if ( 200 !== $code ) {
-			$decoded = json_decode( wp_remote_retrieve_body( $response ), true );
-			if ( is_array( $decoded ) && ! empty( $decoded['message'] ) ) {
-				return new WP_Error( 'wpps_http_' . $code, (string) $decoded['message'] );
-			}
-			/* translators: %d: HTTP status code. */
-			return new WP_Error( 'wpps_http_' . $code, sprintf( __( 'Peer responded with HTTP %d.', 'wp-page-sync' ), $code ) );
+		if ( 200 === $code ) {
+			return true;
 		}
 
-		return array(
-			'body'   => (string) wp_remote_retrieve_body( $response ),
-			'sha256' => (string) wp_remote_retrieve_header( $response, 'x-wpps-sha256' ),
-		);
+		// An error answer is a small JSON document, streamed into the file as well.
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- reading the head of our own temp file.
+		$decoded = json_decode( (string) file_get_contents( $file, false, null, 0, 8192 ), true );
+		if ( is_array( $decoded ) && ! empty( $decoded['message'] ) ) {
+			return new WP_Error( 'wpps_http_' . $code, (string) $decoded['message'] );
+		}
+		return new WP_Error( 'wpps_http_' . $code, self::http_error_message( $code ) );
 	}
 
 	/**
@@ -213,7 +218,7 @@ class WPPS_Client {
 		if ( 'localhost' === $host || '127.0.0.1' === $host ) {
 			return true;
 		}
-		return (bool) preg_match( '/\.(test|local)$/', $host );
+		return (bool) preg_match( '/\.(test|local)$/D', $host );
 	}
 
 	/**
@@ -256,15 +261,34 @@ class WPPS_Client {
 		$decoded = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		if ( $code < 200 || $code >= 300 ) {
-			if ( is_array( $decoded ) && ! empty( $decoded['message'] ) ) {
-				$message = (string) $decoded['message'];
-			} else {
-				/* translators: %d: HTTP status code. */
-				$message = sprintf( __( 'Peer responded with HTTP %d.', 'wp-page-sync' ), $code );
-			}
+			$message = ( is_array( $decoded ) && ! empty( $decoded['message'] ) )
+				? (string) $decoded['message']
+				: self::http_error_message( $code );
 			return new WP_Error( 'wpps_http_' . $code, $message );
 		}
 
 		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	/**
+	 * Message for an error answer without a JSON message of its own.
+	 *
+	 * A 413 without one comes from the web server or a proxy in front of
+	 * WordPress, not from this plugin: its body-size limit is below one
+	 * request.
+	 *
+	 * @param int $code HTTP status code.
+	 * @return string
+	 */
+	private static function http_error_message( $code ) {
+		if ( 413 === $code ) {
+			return sprintf(
+				/* translators: %s: size of one upload piece, e.g. "1 MB". */
+				__( 'The request is too large for the receiving server (HTTP 413): its web server or proxy limits the request body size, for example nginx client_max_body_size. Files are sent in pieces of %s, so that limit must be at least this large.', 'wp-page-sync' ),
+				size_format( WPPS_CHUNK_BYTES )
+			);
+		}
+		/* translators: %d: HTTP status code. */
+		return sprintf( __( 'Peer responded with HTTP %d.', 'wp-page-sync' ), $code );
 	}
 }

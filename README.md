@@ -7,10 +7,16 @@ in both directions, including the upload files they reference.
 
 - Push and pull pages and posts between two paired sites, individually or as a
   bulk selection that syncs parents before their children.
-- Transfers the referenced upload files with the post: images and linked files
-  such as PDFs, checksum-verified and re-attached on the receiving side with
-  their URLs rewritten to that site's domain and uploads path.
-- Carries the publish date and the categories and tags with the post; they
+- Transfers the referenced upload files with the post: images, videos, audio
+  and linked files such as PDFs, checksum-verified and re-attached on the
+  receiving side with their URLs rewritten to that site's domain and uploads
+  path. Every size of an image (including WordPress' "-scaled" copy of large
+  photos and its original) maps onto one copy on the receiving side, together
+  with the image's title, alt text, caption and description. Files travel in
+  1 MB pieces, up to 256 MB per file.
+- Carries the publish date, the post password, the comment and pingback
+  settings and the categories and tags with the post. Fields it does not
+  carry, such as the author, stay as they are on the receiving post. Terms
   replace the receiving post's categories and tags, so a category or tag that
   exists only there is removed from the post. Terms are matched by slug;
   missing ones are created on the receiving site, existing ones are never
@@ -38,8 +44,8 @@ in both directions, including the upload files they reference.
 ## Limits
 
 - **Not every upload reference travels.** A file whose name or file type is
-  outside the transfer whitelist (an umlaut in the file name, an extension the
-  plugin does not carry) is excluded from the transfer and its URL deliberately
+  outside the transfer whitelist (special characters in the file name, an
+  extension the plugin does not carry) or larger than 256 MB is excluded from the transfer and its URL deliberately
   keeps pointing at the source site. The sync dialog names it as a pre-flight
   warning before the sync and the verifier reports the leftover URL after it.
   A reference written without a host (`/wp-content/uploads/…` instead of a full
@@ -47,9 +53,10 @@ in both directions, including the upload files they reference.
 - **"Never deleted" covers global classes only.** The GeneratePress color
   palette is replaced as a whole rather than merged, so colors that exist only
   on the target are lost.
-- **The content hash covers title, path, status, content, excerpt and the
-  featured image file.** Post meta, the date, the terms and the attachment
-  IDs in media blocks are not part of it: two copies can report as in sync while their custom fields differ, and
+- **The content hash covers title, path, status, content, excerpt, the
+  featured image file, the password and the comment and pingback settings.**
+  Post meta, the date, the terms, image texts and the attachment IDs in media
+  blocks are not part of it: two copies can report as in sync while their custom fields differ, and
   meta deleted on the source is not deleted on the target by an import.
 - **Not every attachment ID is remapped.** The legacy `core/gallery` ID list,
   the `[gallery]` shortcode, the GenerateBlocks v1 background image ID
@@ -59,10 +66,11 @@ in both directions, including the upload files they reference.
   deletes anything on the connected site. A file a post stops referencing (for
   example after switching to a new versioned file name) also stays in the
   receiving site's media library.
-- **Update both connected sites.** Sync runs in both directions, and a site on
-  a version before 1.2.0 rejects `.vtt` files: a push to it or a pull by it of
-  a post with a subtitle track fails. Mixed versions also compute different
-  content hashes, so posts show as changed until both sites run 1.2.0.
+- **Update both connected sites.** Sync runs in both directions. A site before
+  1.3.0 cannot receive a pushed file (files travel in 1 MB pieces since
+  1.3.0): such a push stops before anything is written and asks for the
+  update. Mixed versions also compute different content hashes, so posts show
+  as changed until both sites run 1.3.0.
 
 ## Pairing
 

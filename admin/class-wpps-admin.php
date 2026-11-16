@@ -192,6 +192,7 @@ class WPPS_Admin {
 					'failed'            => __( 'failed', 'wp-page-sync' ),
 					'bulkSkipped'       => __( 'Skipped as conflicts (push each one on its own and confirm the force option):', 'wp-page-sync' ),
 					'bulkFailed'        => __( 'Failed:', 'wp-page-sync' ),
+					'bulkWarnings'      => __( 'Pushed with warnings:', 'wp-page-sync' ),
 					'bulkRunning'       => __( 'A bulk push is still running. Wait for it to finish before syncing a single post.', 'wp-page-sync' ),
 					'globalsAdded'      => __( 'Added classes', 'wp-page-sync' ),
 					'globalsChanged'    => __( 'Changed classes', 'wp-page-sync' ),
@@ -280,6 +281,9 @@ class WPPS_Admin {
 			'confirmPull'   => __( 'Pulling replaces this post with the version from the connected site and reloads the editor. Anything not saved here yet is lost. Continue?', 'wp-page-sync' ),
 			'working'       => __( 'Pulling…', 'wp-page-sync' ),
 			'error'         => __( 'The pull failed. Nothing was changed here.', 'wp-page-sync' ),
+			'pulledTitle'   => __( 'Pulled, with warnings', 'wp-page-sync' ),
+			'pulledIntro'   => __( 'The post was pulled, but the sync reported the following. Reload the editor to see the pulled version; saving the editor as it is would overwrite it.', 'wp-page-sync' ),
+			'reload'        => __( 'Reload now', 'wp-page-sync' ),
 		);
 	}
 
@@ -516,6 +520,7 @@ class WPPS_Admin {
 	public function ajax_sync_preview() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result(
 			$this->sync->preview( $this->posted_peer(), $this->posted_post_type(), $this->posted_path(), $this->posted_direction() )
@@ -530,6 +535,7 @@ class WPPS_Admin {
 	public function ajax_push() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result(
 			$this->sync->push( $this->posted_peer(), $this->posted_post_type(), $this->posted_path(), $this->posted_force() )
@@ -544,6 +550,7 @@ class WPPS_Admin {
 	public function ajax_pull() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result(
 			$this->sync->pull( $this->posted_peer(), $this->posted_post_type(), $this->posted_path(), $this->posted_force() )
@@ -570,6 +577,7 @@ class WPPS_Admin {
 	public function ajax_globals_sync() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result( $this->sync->globals_sync( $this->posted_peer(), $this->posted_direction() ) );
 	}
@@ -617,9 +625,10 @@ class WPPS_Admin {
 		$entries = array();
 		foreach ( array_reverse( WPPS_Log::get_entries() ) as $entry ) {
 			$entries[] = array(
-				'time'    => wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $entry['time'] ),
-				'type'    => (string) $entry['type'],
-				'message' => (string) $entry['message'],
+				'time'     => wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $entry['time'] ),
+				'type'     => (string) $entry['type'],
+				'message'  => (string) $entry['message'],
+				'warnings' => ( isset( $entry['warnings'] ) && is_array( $entry['warnings'] ) ) ? array_values( $entry['warnings'] ) : array(),
 			);
 		}
 
@@ -772,7 +781,7 @@ class WPPS_Admin {
 	 * @return array Peer record.
 	 */
 	private function get_valid_peer( $peer_id ) {
-		if ( ! preg_match( '/^[0-9a-f]{8}$/', $peer_id ) ) {
+		if ( ! preg_match( '/^[0-9a-f]{8}$/D', $peer_id ) ) {
 			wp_send_json_error( array( 'message' => __( 'Invalid peer.', 'wp-page-sync' ) ) );
 		}
 		$peer = $this->peers->get_peer( $peer_id );

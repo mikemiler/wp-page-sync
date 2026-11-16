@@ -24,14 +24,53 @@ class WPPS_Importer {
 		'png'      => 'image/png',
 		'gif'      => 'image/gif',
 		'webp'     => 'image/webp',
+		'avif'     => 'image/avif',
 		'svg'      => 'image/svg+xml',
 		'pdf'      => 'application/pdf',
-		'mp4'      => 'video/mp4',
+		'mp4|m4v'  => 'video/mp4',
 		'webm'     => 'video/webm',
+		'mov'      => 'video/quicktime',
+		'ogv'      => 'video/ogg',
+		'mp3|m4a'  => 'audio/mpeg',
+		'ogg'      => 'audio/ogg',
+		'wav'      => 'audio/wav',
 		'vtt'      => 'text/vtt',
 		'woff2'    => 'font/woff2',
 		'ico'      => 'image/x-icon',
 	);
+
+	/**
+	 * Folder below the uploads base dir that holds incoming files while they
+	 * are being received (chunked push, streamed pull, legacy upload).
+	 *
+	 * @var string
+	 */
+	const TEMP_DIR = 'wpps-tmp';
+
+	/**
+	 * Age after which an abandoned temp file is deleted (design value, one
+	 * hour: every received chunk and every streamed download refreshes the
+	 * file's mtime, so only a transfer that stalled for an hour loses it).
+	 *
+	 * @var int
+	 */
+	const TEMP_MAX_AGE = HOUR_IN_SECONDS;
+
+	/**
+	 * Largest SVG the importer reads into memory for the sanitizer (design
+	 * value: far above any web graphic, small enough that the sanitizer's
+	 * DOM parse stays cheap). Larger SVGs are rejected.
+	 *
+	 * @var int
+	 */
+	const MAX_SVG_BYTES = 5 * MB_IN_BYTES;
+
+	/**
+	 * Guard files in the temp folder: they stay when stale files are swept.
+	 *
+	 * @var string[]
+	 */
+	const TEMP_GUARDS = array( '.htaccess', 'index.html' );
 
 	/**
 	 * Exporter (path lookup, meta denylist, known hosts, content hash).
@@ -50,11 +89,21 @@ class WPPS_Importer {
 	}
 
 	/**
-	 * Validates an uploads-relative path (plan §4.3).
+	 * Validates an uploads-relative path (plan §4.3, widened in 1.3.0).
 	 *
-	 * No empty/./.. segments, max 5 segments, segment charset [A-Za-z0-9._-],
-	 * basename must survive sanitize_file_name() unchanged (also rejects
-	 * .htaccess-style names since sanitize strips leading dots).
+	 * Containment rules, all required:
+	 * - relative: no leading "/", no empty segment (so no "//"), max 5
+	 *   segments; "/" is the only separator, a backslash is not allowed;
+	 * - not inside the staging folder (first segment "wpps-tmp");
+	 * - every segment passes valid_path_segment(): valid UTF-8, letters,
+	 *   digits and combining marks of any script plus "._@-", never starting
+	 *   with a dot (rules out ".", ".." and hidden files such as .htaccess),
+	 *   no control characters, NUL, "%", ":" or whitespace;
+	 * - the basename survives sanitize_file_name() unchanged apart from the
+	 *   accent folding WordPress applies itself, so a name WordPress would
+	 *   rewrite on upload (special characters, a double extension such as
+	 *   "x.php.jpg") is still rejected.
+	 * The write path additionally checks realpath() containment.
 	 *
 	 * @param string $rel Rel path.
 	 * @return bool
@@ -64,16 +113,34 @@ class WPPS_Importer {
 			return false;
 		}
 		$segments = explode( '/', $rel );
-		if ( count( $segments ) > 5 ) {
+		// The staging folder is never a sync target or source (any case, for case-insensitive file systems).
+		if ( count( $segments ) > 5 || strtolower( $segments[0] ) === self::TEMP_DIR ) {
 			return false;
 		}
 		foreach ( $segments as $segment ) {
-			if ( '' === $segment || '.' === $segment || '..' === $segment || ! preg_match( '/^[A-Za-z0-9._-]+$/', $segment ) ) {
+			if ( ! self::valid_path_segment( $segment ) ) {
 				return false;
 			}
 		}
 		$basename = end( $segments );
-		return sanitize_file_name( $basename ) === $basename;
+		return sanitize_file_name( $basename ) === remove_accents( $basename );
+	}
+
+	/**
+	 * Whether one path segment (a folder or file name) is allowed.
+	 *
+	 * The /u modifier makes preg_match() fail on invalid UTF-8, so overlong
+	 * or broken byte sequences never pass.
+	 *
+	 * @param mixed $segment Segment.
+	 * @return bool
+	 */
+	public static function valid_path_segment( $segment ) {
+		return is_string( $segment )
+			&& '' !== $segment
+			&& strlen( $segment ) <= 255
+			&& '.' !== $segment[0]
+			&& 1 === preg_match( '/^[\p{L}\p{N}\p{M}._@-]+$/uD', $segment );
 	}
 
 	/**
@@ -106,6 +173,72 @@ class WPPS_Importer {
 	}
 
 	/**
+	 * Attachment that owns a file: the one registered under the file itself,
+	 * else one whose main file is a WordPress variant of the same name in the
+	 * same folder.
+	 *
+	 * WordPress registers a big image under "photo-scaled.jpg" (or
+	 * "photo-rotated.jpg") and keeps the untouched "photo.jpg" only in its
+	 * metadata (original_image); size files are "photo-1024x768.jpg", also
+	 * for sizes no longer listed in the metadata. So a referenced file
+	 * resolves through these candidates: the name itself with -scaled or
+	 * -rotated, then the name without its -WxH suffix, plain, -scaled and
+	 * -rotated.
+	 *
+	 * $require_proof is the import-side mode: a candidate only counts when
+	 * its metadata names this file as its original_image, i.e. WordPress
+	 * itself derived the candidate from exactly this file. That rules out
+	 * adopting an unrelated attachment that merely has a similar name.
+	 *
+	 * @param string $rel           Uploads-relative path of the file.
+	 * @param bool   $require_proof Only accept a candidate that lists this file as its original.
+	 * @return int 0 when no attachment owns the file.
+	 */
+	public static function attachment_id_for_file( $rel, $require_proof = false ) {
+		$exact = self::attachment_id_by_rel( $rel );
+		if ( $exact ) {
+			return $exact;
+		}
+
+		$basename = wp_basename( $rel );
+		$dot      = strrpos( $basename, '.' );
+		if ( false === $dot || 0 === $dot ) {
+			return 0;
+		}
+		$dir       = substr( $rel, 0, strlen( $rel ) - strlen( $basename ) );
+		$name      = substr( $basename, 0, $dot );
+		$extension = substr( $basename, $dot );
+
+		$stems    = $require_proof ? array( $name ) : array_unique( array( $name, (string) preg_replace( '/-\d+x\d+$/', '', $name ) ) );
+		$suffixes = $require_proof ? array( '-scaled', '-rotated' ) : array( '', '-scaled', '-rotated' );
+		foreach ( $stems as $stem ) {
+			foreach ( $suffixes as $suffix ) {
+				$candidate = $dir . $stem . $suffix . $extension;
+				if ( $candidate === $rel ) {
+					continue;
+				}
+				$id = self::attachment_id_by_rel( $candidate );
+				if ( $id && ( ! $require_proof || self::is_original_of( $id, $basename ) ) ) {
+					return $id;
+				}
+			}
+		}
+		return 0;
+	}
+
+	/**
+	 * Whether an attachment's metadata names a file as its original_image.
+	 *
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $basename      File name.
+	 * @return bool
+	 */
+	private static function is_original_of( $attachment_id, $basename ) {
+		$meta = wp_get_attachment_metadata( $attachment_id, true );
+		return is_array( $meta ) && isset( $meta['original_image'] ) && $basename === $meta['original_image'];
+	}
+
+	/**
 	 * Attachment ID by an exact meta value.
 	 *
 	 * @param string $key   Meta key.
@@ -117,10 +250,10 @@ class WPPS_Importer {
 			array(
 				'post_type'      => 'attachment',
 				'post_status'    => 'inherit',
-				'posts_per_page' => 1,
+				'posts_per_page' => -1,
 				'fields'         => 'ids',
 				'no_found_rows'  => true,
-				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query -- _wp_attached_file has no dedicated index anywhere in core; bounded to one row.
+				// phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_query -- _wp_attached_file has no dedicated index anywhere in core; the case/accent-insensitive matches are a handful of rows at most.
 				'meta_query'     => array(
 					array(
 						'key'   => $key,
@@ -129,7 +262,19 @@ class WPPS_Importer {
 				),
 			)
 		);
-		return $query->posts ? (int) $query->posts[0] : 0;
+
+		/*
+		 * MySQL compares with the column's collation, which usually ignores
+		 * case and accents ("Photo.jpg" = "photo.jpg", "cafe.jpg" =
+		 * "café.jpg"). Only a byte-exact match counts, or an unrelated
+		 * attachment would be adopted.
+		 */
+		foreach ( $query->posts as $id ) {
+			if ( (string) get_post_meta( (int) $id, $key, true ) === (string) $value ) {
+				return (int) $id;
+			}
+		}
+		return 0;
 	}
 
 	/**
@@ -139,14 +284,70 @@ class WPPS_Importer {
 	 * same attachment. Different content never overwrites an existing file;
 	 * it is stored under a deterministic -wpps{6 hex of sha} suffix.
 	 *
+	 * The received file is CONSUMED: it is deleted right away, after a copy
+	 * under a fresh random name in the temp folder. Every check (size,
+	 * sha256, type gate, SVG sanitizer) runs on that copy, so no other
+	 * request that still holds a handle on the received file (a parallel
+	 * chunk with the same upload id) can change the bytes between the
+	 * checks and the move into place. The copy is moved into place on
+	 * success and deleted on every other outcome.
+	 *
 	 * @param string $rel    Uploads-relative target path.
-	 * @param string $sha256 Expected sha256 of the binary.
-	 * @param string $mime   Declared mime (informational; the type gate decides).
-	 * @param string $binary Raw file bytes.
+	 * @param string $sha256 Expected sha256 of the file.
+	 * @param string $source Absolute path of the received temp file.
 	 * @return array|WP_Error {attachment_id, rel_path, url, status, warnings[]}.
 	 */
-	public function import_media( $rel, $sha256, $mime, $binary ) {
-		$request_error = $this->validate_media_request( $rel, $sha256, $binary );
+	public function import_media( $rel, $sha256, $source ) {
+		$work = self::isolate( $rel, $source );
+		if ( is_wp_error( $work ) ) {
+			return $work;
+		}
+		try {
+			return $this->import_media_file( $rel, $sha256, $work );
+		} finally {
+			self::discard( $work );
+		}
+	}
+
+	/**
+	 * Copies a received file to a fresh random-named temp file and deletes
+	 * the original. A copy, not a rename: a rename keeps the inode, and with
+	 * it any handle another request still has open on it.
+	 *
+	 * @param string $rel    Uploads-relative target path (for the size message).
+	 * @param string $source Received file.
+	 * @return string|WP_Error Path of the private copy.
+	 */
+	private static function isolate( $rel, $source ) {
+		try {
+			$size = is_file( $source ) ? (int) filesize( $source ) : 0;
+			if ( $size > WPPS_MAX_FILE_BYTES ) {
+				return new WP_Error( 'wpps_too_large', self::too_large_message( $rel, $size ), array( 'status' => 413 ) );
+			}
+			$copy = self::temp_file();
+			if ( is_wp_error( $copy ) ) {
+				return $copy;
+			}
+			if ( 0 === $size || ! copy( $source, $copy ) ) {
+				self::discard( $copy );
+				return new WP_Error( 'wpps_write_failed', __( 'Could not store the received file.', 'wp-page-sync' ), array( 'status' => 500 ) );
+			}
+			return $copy;
+		} finally {
+			self::discard( $source );
+		}
+	}
+
+	/**
+	 * Body of import_media(); the caller deletes $source afterwards.
+	 *
+	 * @param string $rel    Uploads-relative target path.
+	 * @param string $sha256 Expected sha256 of the file.
+	 * @param string $source Absolute path of the received temp file.
+	 * @return array|WP_Error
+	 */
+	private function import_media_file( $rel, $sha256, $source ) {
+		$request_error = $this->validate_media_request( $rel, $sha256, $source );
 		if ( is_wp_error( $request_error ) ) {
 			return $request_error;
 		}
@@ -162,8 +363,9 @@ class WPPS_Importer {
 			$rel        = $suffixed;
 		}
 
-		$abs      = $uploads['basedir'] . '/' . $rel;
-		$existing = self::attachment_id_by_rel( $rel );
+		$abs = $uploads['basedir'] . '/' . $rel;
+		// With proof: the target may have scaled the file it imported before.
+		$existing = self::attachment_id_for_file( $rel, true );
 
 		if ( file_exists( $abs ) ) {
 			if ( ! $this->is_same_import( $rel, $sha256, $abs ) ) {
@@ -171,7 +373,7 @@ class WPPS_Importer {
 			}
 			$status = $existing ? 'reused' : 'adopted';
 		} else {
-			$write_error = $this->write_validated_file( $abs, $rel, $sha256, $binary );
+			$write_error = $this->write_validated_file( $abs, $rel, $source );
 			if ( is_wp_error( $write_error ) ) {
 				return $write_error;
 			}
@@ -183,7 +385,7 @@ class WPPS_Importer {
 			return $attachment_id;
 		}
 		if ( 'reused' !== $status ) {
-			$this->regenerate_metadata( $attachment_id, $abs );
+			$this->regenerate_metadata( $attachment_id, $rel, $abs );
 		}
 		update_post_meta( $attachment_id, '_wpps_sha256', $sha256 );
 
@@ -193,6 +395,160 @@ class WPPS_Importer {
 			'url'           => $uploads['baseurl'] . '/' . $rel,
 			'status'        => $status,
 			'warnings'      => $warnings,
+		);
+	}
+
+	/**
+	 * Receives one chunk of a pushed file (1.3.0 chunked upload).
+	 *
+	 * Chunks arrive in order, each signed on its own. They are appended to
+	 * {uploads}/wpps-tmp/{name}.part, where the name is derived server-side
+	 * from the sending peer and its upload_id with an HMAC over this site's
+	 * salt: a peer cannot pick or predict a file name, and two peers can
+	 * never write into each other's upload. The last chunk completes the file,
+	 * which then goes through import_media() (size + sha256 verification,
+	 * type gate, dedupe). Any failure deletes the partial file, and the
+	 * sender aborts the whole sync before the post is written.
+	 *
+	 * @param array  $chunk {peer_id, upload_id, rel_path, sha256, offset, total},
+	 *                      already validated by the route args.
+	 * @param string $bytes Raw chunk body.
+	 * @return array|WP_Error {received} for a partial file, the import_media()
+	 *                        result for the completing chunk.
+	 */
+	public function receive_chunk( array $chunk, $bytes ) {
+		$offset = (int) $chunk['offset'];
+		$total  = (int) $chunk['total'];
+		$length = strlen( (string) $bytes );
+
+		if ( ! preg_match( '/^[0-9a-f]{32}$/D', (string) $chunk['upload_id'] ) || $offset < 0 || $length < 1 || $length > WPPS_CHUNK_BYTES || $offset + $length > $total ) {
+			return new WP_Error( 'wpps_invalid_chunk', __( 'Invalid upload chunk.', 'wp-page-sync' ), array( 'status' => 400 ) );
+		}
+		if ( $total > WPPS_MAX_FILE_BYTES ) {
+			return new WP_Error( 'wpps_too_large', self::too_large_message( (string) $chunk['rel_path'], $total ), array( 'status' => 413 ) );
+		}
+
+		$dir = self::temp_dir();
+		if ( is_wp_error( $dir ) ) {
+			return $dir;
+		}
+		$part = $dir . '/' . hash_hmac( 'sha256', $chunk['peer_id'] . '|' . $chunk['upload_id'], wp_salt() ) . '.part';
+
+		clearstatcache( true, $part );
+		if ( 0 !== $offset && ( ! is_file( $part ) || filesize( $part ) !== $offset ) ) {
+			self::discard( $part );
+			return new WP_Error( 'wpps_chunk_order', __( 'An upload chunk arrived out of order, so the transfer was aborted. Run the sync again.', 'wp-page-sync' ), array( 'status' => 409 ) );
+		}
+
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- appending to our own temp file inside uploads; WP_Filesystem cannot append.
+		$written = file_put_contents( $part, $bytes, ( 0 === $offset ) ? LOCK_EX : FILE_APPEND | LOCK_EX );
+		clearstatcache( true, $part );
+		if ( $length !== $written ) {
+			self::discard( $part );
+			return new WP_Error( 'wpps_write_failed', __( 'Could not store the received upload chunk.', 'wp-page-sync' ), array( 'status' => 500 ) );
+		}
+
+		if ( $offset + $length < $total ) {
+			return array( 'received' => $offset + $length );
+		}
+		if ( filesize( $part ) !== $total ) {
+			self::discard( $part );
+			return new WP_Error( 'wpps_write_failed', __( 'The received file is incomplete.', 'wp-page-sync' ), array( 'status' => 400 ) );
+		}
+
+		return $this->import_media( (string) $chunk['rel_path'], (string) $chunk['sha256'], $part );
+	}
+
+	/**
+	 * Temp folder for incoming files, created on demand inside uploads.
+	 *
+	 * Each call also deletes every file older than TEMP_MAX_AGE except the
+	 * guard files: a transfer whose sender died midway leaves its partial
+	 * file behind, and the next transfer cleans it up. The files carry
+	 * unguessable names (random or salted HMAC). An empty index.html and a
+	 * .htaccess with "Require all denied" keep the folder from being listed
+	 * or served by Apache; no PHP file is placed there, since security
+	 * scanners report PHP files in uploads. Other web servers ignore both.
+	 *
+	 * @return string|WP_Error Real path of the folder, without trailing slash.
+	 */
+	public static function temp_dir() {
+		$basedir = wp_upload_dir( null, false )['basedir'];
+		$dir     = $basedir . '/' . self::TEMP_DIR;
+
+		if ( ! wp_mkdir_p( $dir ) ) {
+			return new WP_Error( 'wpps_mkdir_failed', __( 'Could not create the uploads directory.', 'wp-page-sync' ), array( 'status' => 500 ) );
+		}
+		$real_dir  = realpath( $dir );
+		$real_base = realpath( $basedir );
+		if ( false === $real_dir || false === $real_base || 0 !== strpos( $real_dir . '/', $real_base . '/' ) ) {
+			return new WP_Error( 'wpps_outside_uploads', __( 'Target path escapes the uploads directory.', 'wp-page-sync' ), array( 'status' => 500 ) );
+		}
+
+		self::write_guard( $real_dir . '/index.html', '' );
+		self::write_guard( $real_dir . '/.htaccess', "Require all denied\n" );
+
+		foreach ( (array) scandir( $real_dir ) as $name ) {
+			$stale = $real_dir . '/' . $name;
+			if ( is_string( $name ) && ! in_array( $name, self::TEMP_GUARDS, true ) && is_file( $stale ) && filemtime( $stale ) < time() - self::TEMP_MAX_AGE ) {
+				self::discard( $stale );
+			}
+		}
+
+		return $real_dir;
+	}
+
+	/**
+	 * Creates a guard file in the temp folder unless it exists.
+	 *
+	 * @param string $file     Absolute path.
+	 * @param string $contents File contents.
+	 * @return void
+	 */
+	private static function write_guard( $file, $contents ) {
+		if ( ! file_exists( $file ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- guard file in our own temp folder.
+			file_put_contents( $file, $contents );
+		}
+	}
+
+	/**
+	 * A fresh, unique temp file path inside temp_dir().
+	 *
+	 * @return string|WP_Error
+	 */
+	public static function temp_file() {
+		$dir = self::temp_dir();
+		return is_wp_error( $dir ) ? $dir : $dir . '/' . bin2hex( random_bytes( 16 ) ) . '.part';
+	}
+
+	/**
+	 * Deletes a temp file if it exists.
+	 *
+	 * @param string $file Absolute path.
+	 * @return void
+	 */
+	public static function discard( $file ) {
+		if ( is_string( $file ) && '' !== $file && is_file( $file ) ) {
+			unlink( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- removing our own temp file.
+		}
+	}
+
+	/**
+	 * Human-readable "file too large" message, shared by the pre-flight on
+	 * both sides and the receiver.
+	 *
+	 * @param string $rel   Uploads-relative path.
+	 * @param int    $bytes File size.
+	 * @return string
+	 */
+	public static function too_large_message( $rel, $bytes ) {
+		return sprintf(
+			/* translators: 1: uploads-relative file path, 2: file size, 3: size limit. */
+			__( 'File is too large to sync: %1$s (%2$s; the limit is %3$s).', 'wp-page-sync' ),
+			$rel,
+			size_format( $bytes, 1 ),
+			size_format( WPPS_MAX_FILE_BYTES )
 		);
 	}
 
@@ -210,7 +566,7 @@ class WPPS_Importer {
 		foreach ( $items as $item ) {
 			$rel = isset( $item['rel_path'] ) ? (string) $item['rel_path'] : '';
 			$sha = isset( $item['sha256'] ) ? (string) $item['sha256'] : '';
-			if ( ! self::validate_rel_path( $rel ) || ! preg_match( '/^[0-9a-f]{64}$/', $sha ) ) {
+			if ( ! self::validate_rel_path( $rel ) || ! preg_match( '/^[0-9a-f]{64}$/D', $sha ) ) {
 				continue;
 			}
 			$abs = $basedir . '/' . $rel;
@@ -243,6 +599,13 @@ class WPPS_Importer {
 	 *
 	 * Entries that carry the source attachment_id (1.2.0+ sources) also feed
 	 * the ids map, source attachment ID => target attachment ID.
+	 *
+	 * 1.3.0+ entries also carry "variants": other referenced file names of
+	 * the same source attachment in the same folder (its untouched original
+	 * behind a -scaled main file, size files missing from the metadata).
+	 * They map onto the target's full-size URL. And they carry
+	 * "attachment_fields" (title, alt, caption, description), which are
+	 * applied to the mapped target attachment: the source is the truth.
 	 *
 	 * @param array $manifest Media manifest entries.
 	 * @return array {map: array<string,string>, ids: array<int,int>, warnings: string[]}
@@ -290,6 +653,22 @@ class WPPS_Importer {
 					? $target_dir . '/' . $local_size[ $name ]['file']
 					: $target_url;
 			}
+
+			foreach ( ( isset( $entry['variants'] ) && is_array( $entry['variants'] ) ) ? $entry['variants'] : array() as $variant ) {
+				if ( self::valid_path_segment( $variant ) && ! isset( $map[ $src_dir . '/' . $variant ] ) ) {
+					$map[ $src_dir . '/' . $variant ] = $target_url;
+				}
+			}
+
+			/*
+			 * Texts only for an attachment proven to hold this exact file:
+			 * with a valid sha256, resolve_attachment() matched by imported
+			 * hash or verified file content. Without one it matched by path
+			 * alone, which must not let a peer rename a foreign attachment.
+			 */
+			if ( preg_match( '/^[0-9a-f]{64}$/D', $sha ) ) {
+				$this->apply_attachment_fields( $attachment_id, isset( $entry['attachment_fields'] ) ? $entry['attachment_fields'] : null );
+			}
 		}
 
 		return array(
@@ -297,6 +676,60 @@ class WPPS_Importer {
 			'ids'      => $ids,
 			'warnings' => $warnings,
 		);
+	}
+
+	/**
+	 * Applies the source attachment's title, alt text, caption and
+	 * description to the mapped target attachment.
+	 *
+	 * A field missing from the entry (a source before 1.3.0, a file without
+	 * an attachment row) leaves the target's value alone. Only changed values
+	 * are written. Sanitizing follows core's media modal: title, caption and
+	 * description go through wp_update_post(), so the content filters (kses
+	 * for a user without unfiltered_html, e.g. the user-less push request)
+	 * apply as in core; the alt text is stripped of all tags like core's
+	 * wp_ajax_save_attachment() does.
+	 *
+	 * @param int        $attachment_id Target attachment ID.
+	 * @param array|null $fields        {title, alt, caption, description}.
+	 * @return void
+	 */
+	private function apply_attachment_fields( $attachment_id, $fields ) {
+		if ( ! is_array( $fields ) ) {
+			return;
+		}
+
+		$update = array();
+		foreach ( array(
+			'title'       => 'post_title',
+			'caption'     => 'post_excerpt',
+			'description' => 'post_content',
+		) as $key => $column ) {
+			if ( ! isset( $fields[ $key ] ) || ! is_string( $fields[ $key ] ) ) {
+				continue;
+			}
+			/*
+			 * Compare what would be STORED: the same db-context filters
+			 * wp_insert_post() runs (kses turns "Tom & Jerry" into
+			 * "Tom &amp; Jerry"), on slashed data as there. Comparing the raw
+			 * source value would rewrite an unchanged field on every sync.
+			 */
+			$stored_form = wp_unslash( sanitize_post_field( $column, wp_slash( $fields[ $key ] ), $attachment_id, 'db' ) );
+			if ( get_post_field( $column, $attachment_id, 'raw' ) !== $stored_form ) {
+				$update[ $column ] = $fields[ $key ];
+			}
+		}
+		if ( $update ) {
+			$update['ID'] = $attachment_id;
+			wp_update_post( wp_slash( $update ) );
+		}
+
+		if ( isset( $fields['alt'] ) && is_string( $fields['alt'] ) ) {
+			$alt = wp_strip_all_tags( $fields['alt'], true );
+			if ( get_post_meta( $attachment_id, '_wp_attachment_image_alt', true ) !== $alt ) {
+				update_post_meta( $attachment_id, '_wp_attachment_image_alt', wp_slash( $alt ) );
+			}
+		}
 	}
 
 	/**
@@ -382,7 +815,23 @@ class WPPS_Importer {
 			'template'    => isset( $post['template'] ) ? sanitize_text_field( (string) $post['template'] ) : '',
 			'date'        => self::valid_datetime( isset( $post['date'] ) ? $post['date'] : '' ),
 			'date_gmt'    => self::valid_datetime( isset( $post['date_gmt'] ) ? $post['date_gmt'] : '' ),
+			// Page settings (1.3.0+ sources); null = not sent, leave the target's value.
+			'password'    => ( isset( $post['password'] ) && is_string( $post['password'] ) ) ? $post['password'] : null,
+			'comments'    => self::open_or_closed( $post, 'comment_status' ),
+			'pings'       => self::open_or_closed( $post, 'ping_status' ),
 		);
+	}
+
+	/**
+	 * A bundle's comment_status / ping_status: "open", "closed" or null when
+	 * the source did not send it (or sent anything else).
+	 *
+	 * @param array  $post Bundle post block.
+	 * @param string $key  Field name.
+	 * @return string|null
+	 */
+	private static function open_or_closed( array $post, $key ) {
+		return ( isset( $post[ $key ] ) && in_array( $post[ $key ], array( 'open', 'closed' ), true ) ) ? $post[ $key ] : null;
 	}
 
 	/**
@@ -397,7 +846,7 @@ class WPPS_Importer {
 		if ( ! is_string( $value ) || '0000-00-00 00:00:00' === $value ) {
 			return '';
 		}
-		return preg_match( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value ) ? $value : '';
+		return preg_match( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $value ) ? $value : '';
 	}
 
 	/**
@@ -412,7 +861,7 @@ class WPPS_Importer {
 		return is_string( $path )
 			&& '' !== $path
 			&& strlen( $path ) <= 500
-			&& (bool) preg_match( '~^[A-Za-z0-9%_\-]+(?:/[A-Za-z0-9%_\-]+){0,9}$~', $path );
+			&& (bool) preg_match( '~^[A-Za-z0-9%_\-]+(?:/[A-Za-z0-9%_\-]+){0,9}$~D', $path );
 	}
 
 	/**
@@ -424,7 +873,7 @@ class WPPS_Importer {
 	private function validate_bundle_meta( array $bundle ) {
 		$meta = array();
 		foreach ( ( isset( $bundle['meta'] ) && is_array( $bundle['meta'] ) ) ? $bundle['meta'] : array() as $key => $value ) {
-			if ( ! is_string( $key ) || ! preg_match( '/^[A-Za-z0-9_.\-]{1,255}$/', $key ) || WPPS_Exporter::is_denied_meta_key( $key ) ) {
+			if ( ! is_string( $key ) || ! preg_match( '/^[A-Za-z0-9_.\-]{1,255}$/D', $key ) || WPPS_Exporter::is_denied_meta_key( $key ) ) {
 				continue;
 			}
 			$meta[ $key ] = $value;
@@ -435,25 +884,22 @@ class WPPS_Importer {
 	/**
 	 * Inserts or updates the post row (kses bracket per plan §4.3).
 	 *
+	 * An update goes through wp_update_post(), which merges with the stored
+	 * row: every field the bundle does not carry (author, comment and ping
+	 * status from a pre-1.3.0 source, post_content_filtered, …) keeps the
+	 * target's value instead of falling back to wp_insert_post() defaults.
+	 * A new post keeps the defaults, including the author (the current
+	 * user: none for a push, the pulling admin for a pull).
+	 *
 	 * @param array    $post     Normalized post fields.
 	 * @param string   $content  Rewritten content.
 	 * @param string   $excerpt  Rewritten excerpt.
-	 * @param string[] $warnings Warning collector, by reference semantics via array return.
+	 * @param string[] $warnings Warning collector.
 	 * @return int|WP_Error
 	 */
 	private function upsert_post( array $post, $content, $excerpt, array &$warnings ) {
-		$parent_id = 0;
-		if ( '' !== $post['parent_path'] ) {
-			$parent = $this->exporter->find_post( $post['post_type'], $post['parent_path'] );
-			if ( $parent ) {
-				$parent_id = $parent->ID;
-			} else {
-				/* translators: %s: parent path. */
-				$warnings[] = sprintf( __( 'Parent "%s" does not exist here; imported at the top level.', 'wp-page-sync' ), $post['parent_path'] );
-			}
-		}
-
-		$existing = $this->exporter->find_post( $post['post_type'], $post['path'] );
+		$parent_id = $this->parent_id( $post, $warnings );
+		$existing  = $this->exporter->find_post( $post['post_type'], $post['path'] );
 
 		$postarr = array_merge(
 			array(
@@ -466,11 +912,9 @@ class WPPS_Importer {
 				'menu_order'   => $post['menu_order'],
 				'post_parent'  => $parent_id,
 			),
-			$this->post_dates( $post, $existing )
+			$this->post_dates( $post, $existing ),
+			self::post_settings( $post )
 		);
-		if ( $existing ) {
-			$postarr['ID'] = $existing->ID;
-		}
 
 		/*
 		 * The importer runs as user 0, where kses would strip inline <svg>
@@ -478,19 +922,165 @@ class WPPS_Importer {
 		 * the writer is an HMAC-authenticated peer paired by an admin. The
 		 * pre-update revision sits INSIDE the bracket on purpose: it writes
 		 * the old content through wp_insert_post() as well, so with kses
-		 * active the stored revision would lose the same inline SVG.
+		 * active the stored revision would lose the same inline SVG. The
+		 * slug repair re-saves the post and therefore sits inside as well.
 		 */
 		kses_remove_filters();
 		try {
 			if ( $existing ) {
 				$this->keep_previous_content( $existing );
+				$postarr['ID'] = $existing->ID;
+				// Keeps wp_update_post() from resetting a draft's date to "now".
+				$postarr['edit_date'] = true;
+				/*
+				 * wp_update_post() merges the stored page_template back in, and
+				 * wp_insert_post() rejects one the active theme does not list
+				 * (invalid_page_template). The template is apply_meta()'s job.
+				 */
+				$postarr['page_template'] = '';
+				$post_id                  = wp_update_post( wp_slash( $postarr ), true );
+			} else {
+				$post_id = wp_insert_post( wp_slash( $postarr ), true );
 			}
-			$post_id = wp_insert_post( wp_slash( $postarr ), true );
+			if ( ! is_wp_error( $post_id ) ) {
+				$this->claim_slug( (int) $post_id, $post['slug'], $parent_id, $warnings );
+			}
 		} finally {
 			kses_init_filters();
 		}
 
 		return $post_id;
+	}
+
+	/**
+	 * Local parent ID for the bundle's parent path (0 = top level).
+	 *
+	 * @param array    $post     Normalized post fields.
+	 * @param string[] $warnings Warning collector.
+	 * @return int
+	 */
+	private function parent_id( array $post, array &$warnings ) {
+		if ( '' === $post['parent_path'] ) {
+			return 0;
+		}
+		$parent = $this->exporter->find_post( $post['post_type'], $post['parent_path'] );
+		if ( $parent ) {
+			return $parent->ID;
+		}
+		/* translators: %s: parent path. */
+		$warnings[] = sprintf( __( 'Parent "%s" does not exist here; imported at the top level.', 'wp-page-sync' ), $post['parent_path'] );
+		return 0;
+	}
+
+	/**
+	 * Page settings for wp_insert_post(): only the ones the bundle carries.
+	 *
+	 * @param array $post Normalized post fields.
+	 * @return array Subset of post_password / comment_status / ping_status.
+	 */
+	private static function post_settings( array $post ) {
+		$settings = array(
+			'post_password'  => $post['password'],
+			'comment_status' => $post['comments'],
+			'ping_status'    => $post['pings'],
+		);
+		return array_filter(
+			$settings,
+			function ( $value ) {
+				return null !== $value;
+			}
+		);
+	}
+
+	/**
+	 * Makes sure the saved post ends up under the requested slug.
+	 *
+	 * Core gives a page the slug "pricing-2" when an attachment with the
+	 * same parent already holds "pricing", and media imported for this very
+	 * page is created first, as an unattached attachment named after its
+	 * file. The next sync would then miss the page at its path and create
+	 * "pricing-3". When the blocker is an attachment, it is moved to a free
+	 * "<slug>-media" slug (core keeps that unique) and the post is saved
+	 * again under the requested slug. Any other blocker (a real post or
+	 * page) is left alone and reported.
+	 *
+	 * @param int      $post_id   Saved post ID.
+	 * @param string   $slug      Requested slug.
+	 * @param int      $parent_id Post parent.
+	 * @param string[] $warnings  Warning collector.
+	 * @return void
+	 */
+	private function claim_slug( $post_id, $slug, $parent_id, array &$warnings ) {
+		$stored = (string) get_post_field( 'post_name', $post_id );
+		if ( $stored === $slug ) {
+			return;
+		}
+
+		$blocker = $this->slug_blocker( $post_id, $slug, $parent_id );
+		if ( $blocker && 'attachment' === get_post_type( $blocker ) ) {
+			wp_update_post(
+				wp_slash(
+					array(
+						'ID'        => $blocker,
+						'post_name' => $slug . '-media',
+					)
+				)
+			);
+			wp_update_post(
+				wp_slash(
+					array(
+						'ID'            => $post_id,
+						'post_name'     => $slug,
+						'edit_date'     => true,
+						'page_template' => '',
+					)
+				)
+			);
+			$stored = (string) get_post_field( 'post_name', $post_id );
+		}
+
+		if ( $stored === $slug ) {
+			return;
+		}
+		if ( $blocker && 'attachment' !== get_post_type( $blocker ) ) {
+			/* translators: 1: requested slug, 2: slug the post was saved under. */
+			$warnings[] = sprintf( __( 'The address "%1$s" is already used by another post or page on this site, so this one was saved as "%2$s". Rename or remove the other one, then sync again.', 'wp-page-sync' ), $slug, $stored );
+			return;
+		}
+		/* translators: 1: requested slug, 2: slug the post was saved under. */
+		$warnings[] = sprintf( __( 'WordPress did not accept the address "%1$s" on this site (it reserves some addresses, for example for feeds or date archives), so this post was saved as "%2$s". Choose a different slug at the source, then sync again.', 'wp-page-sync' ), $slug, $stored );
+	}
+
+	/**
+	 * The entry holding a slug in the same scope core's wp_unique_post_slug()
+	 * checks: for a hierarchical type, the same type or an attachment with
+	 * the same parent; otherwise the same type. Every status counts, as in
+	 * core.
+	 *
+	 * @param int    $post_id   Post that wants the slug.
+	 * @param string $slug      Slug.
+	 * @param int    $parent_id Post parent.
+	 * @return int 0 when none.
+	 */
+	private function slug_blocker( $post_id, $slug, $parent_id ) {
+		$post_type    = (string) get_post_type( $post_id );
+		$hierarchical = is_post_type_hierarchical( $post_type );
+
+		$args = array(
+			'name'           => $slug,
+			'post_type'      => $hierarchical ? array( $post_type, 'attachment' ) : array( $post_type ),
+			'post_status'    => array_values( get_post_stati() ),
+			'post__not_in'   => array( $post_id ),
+			'posts_per_page' => 1,
+			'fields'         => 'ids',
+			'no_found_rows'  => true,
+		);
+		if ( $hierarchical ) {
+			$args['post_parent'] = $parent_id;
+		}
+
+		$query = new WP_Query( $args );
+		return $query->posts ? (int) $query->posts[0] : 0;
 	}
 
 	/**
@@ -512,7 +1102,15 @@ class WPPS_Importer {
 			);
 		}
 		if ( '' !== $post['date'] ) {
-			return array( 'post_date' => $post['date'] );
+			/*
+			 * An empty GMT date lets core derive it (or keep it unset for a
+			 * draft); without it, an update would keep the target's old GMT
+			 * date, e.g. of a published post a draft is pushed over.
+			 */
+			return array(
+				'post_date'     => $post['date'],
+				'post_date_gmt' => '',
+			);
 		}
 		if ( $existing ) {
 			return array(
@@ -683,14 +1281,14 @@ class WPPS_Importer {
 	 * @return int 0 when unresolved.
 	 */
 	private function resolve_attachment( $rel, $sha ) {
-		if ( preg_match( '/^[0-9a-f]{64}$/', $sha ) ) {
+		if ( preg_match( '/^[0-9a-f]{64}$/D', $sha ) ) {
 			$by_sha = self::attachment_id_by_meta( '_wpps_sha256', $sha );
 			if ( $by_sha ) {
 				return $by_sha;
 			}
 		}
 
-		$by_rel = self::attachment_id_by_rel( $rel );
+		$by_rel = self::attachment_id_for_file( $rel, true );
 		if ( ! $by_rel ) {
 			return 0;
 		}
@@ -741,20 +1339,21 @@ class WPPS_Importer {
 	 *
 	 * @param string $rel    Rel path.
 	 * @param string $sha256 Declared sha256.
-	 * @param string $binary Raw bytes.
+	 * @param string $source Received temp file.
 	 * @return true|WP_Error
 	 */
-	private function validate_media_request( $rel, $sha256, $binary ) {
+	private function validate_media_request( $rel, $sha256, $source ) {
 		if ( ! self::validate_rel_path( $rel ) ) {
 			return new WP_Error( 'wpps_invalid_path', __( 'Invalid file path.', 'wp-page-sync' ), array( 'status' => 400 ) );
 		}
 		if ( ! self::allowed_extension( $rel ) ) {
 			return new WP_Error( 'wpps_type_not_allowed', __( 'File type is not allowed.', 'wp-page-sync' ), array( 'status' => 415 ) );
 		}
-		if ( strlen( $binary ) > WPPS_MAX_FILE_BYTES ) {
-			return new WP_Error( 'wpps_too_large', __( 'File exceeds the size limit.', 'wp-page-sync' ), array( 'status' => 413 ) );
+		$size = is_file( $source ) ? (int) filesize( $source ) : 0;
+		if ( $size > WPPS_MAX_FILE_BYTES ) {
+			return new WP_Error( 'wpps_too_large', self::too_large_message( $rel, $size ), array( 'status' => 413 ) );
 		}
-		if ( '' === $binary || hash( 'sha256', $binary ) !== $sha256 ) {
+		if ( 0 === $size || hash_file( 'sha256', $source ) !== $sha256 ) {
 			return new WP_Error( 'wpps_hash_mismatch', __( 'File content does not match its checksum.', 'wp-page-sync' ), array( 'status' => 400 ) );
 		}
 		return true;
@@ -777,59 +1376,47 @@ class WPPS_Importer {
 		if ( hash_file( 'sha256', $abs ) === $sha256 ) {
 			return true;
 		}
-		$attachment_id = self::attachment_id_by_rel( $rel );
+		$attachment_id = self::attachment_id_for_file( $rel, true );
 		return $attachment_id && get_post_meta( $attachment_id, '_wpps_sha256', true ) === $sha256;
 	}
 
 	/**
-	 * Writes the binary through the §4.3 gates: containment, post-write
-	 * sha256 verification, own mime map, SVG sniff + mandatory sanitizer,
-	 * then an atomic same-dir rename.
+	 * Moves the checked file into place (§4.3 gates). The file is the
+	 * private copy from import_media(), already size- and sha256-verified in
+	 * the temp folder. The type gate (own mime map, SVG sniff + mandatory
+	 * sanitizer) also runs there, so only a fully checked file ever enters
+	 * a visible uploads folder, with one rename after the containment check.
 	 *
 	 * @param string $abs    Absolute target path.
 	 * @param string $rel    Rel path (for the filename-based type check).
-	 * @param string $sha256 Declared sha256 the written bytes must match.
-	 * @param string $binary Raw bytes.
+	 * @param string $source Checked private temp file.
 	 * @return true|WP_Error
 	 */
-	private function write_validated_file( $abs, $rel, $sha256, $binary ) {
-		$basedir = wp_upload_dir( null, false )['basedir'];
-		$dir     = dirname( $abs );
-
-		if ( ! wp_mkdir_p( $dir ) ) {
-			return new WP_Error( 'wpps_mkdir_failed', __( 'Could not create the uploads directory.', 'wp-page-sync' ), array( 'status' => 500 ) );
-		}
-		$real_dir  = realpath( $dir );
-		$real_base = realpath( $basedir );
-		if ( false === $real_dir || false === $real_base || 0 !== strpos( $real_dir . '/', $real_base . '/' ) ) {
-			return new WP_Error( 'wpps_outside_uploads', __( 'Target path escapes the uploads directory.', 'wp-page-sync' ), array( 'status' => 400 ) );
+	private function write_validated_file( $abs, $rel, $source ) {
+		$checked = $this->check_file_type( $source, wp_basename( $rel ) );
+		if ( is_wp_error( $checked ) ) {
+			return $checked;
 		}
 
-		$tmp = $real_dir . '/.wpps-' . bin2hex( random_bytes( 8 ) ) . '.tmp';
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- direct uploads write in a server-to-server import; WP_Filesystem adds credential prompts that cannot exist in REST context.
-		$written = file_put_contents( $tmp, $binary, LOCK_EX );
-
-		/*
-		 * Plan §4.3: sha256 verified after write. Runs BEFORE the type check,
-		 * because the SVG sanitizer deliberately rewrites the temp file.
-		 */
-		if ( false === $written || strlen( $binary ) !== $written || hash_file( 'sha256', $tmp ) !== $sha256 ) {
-			if ( false !== $written ) {
-				unlink( $tmp ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- removing our own temp file.
+		try {
+			$basedir = wp_upload_dir( null, false )['basedir'];
+			$dir     = dirname( $abs );
+			if ( ! wp_mkdir_p( $dir ) ) {
+				return new WP_Error( 'wpps_mkdir_failed', __( 'Could not create the uploads directory.', 'wp-page-sync' ), array( 'status' => 500 ) );
 			}
-			return new WP_Error( 'wpps_write_failed', __( 'Could not write the file (verification after write failed).', 'wp-page-sync' ), array( 'status' => 500 ) );
-		}
+			$real_dir  = realpath( $dir );
+			$real_base = realpath( $basedir );
+			if ( false === $real_dir || false === $real_base || 0 !== strpos( $real_dir . '/', $real_base . '/' ) ) {
+				return new WP_Error( 'wpps_outside_uploads', __( 'Target path escapes the uploads directory.', 'wp-page-sync' ), array( 'status' => 400 ) );
+			}
 
-		$type_error = $this->check_file_type( $tmp, basename( $rel ) );
-		if ( is_wp_error( $type_error ) ) {
-			unlink( $tmp ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- removing our own temp file.
-			return $type_error;
-		}
-
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- atomic same-directory rename of our own temp file.
-		if ( ! rename( $tmp, $abs ) ) {
-			unlink( $tmp ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- removing our own temp file.
-			return new WP_Error( 'wpps_write_failed', __( 'Could not move the file into place.', 'wp-page-sync' ), array( 'status' => 500 ) );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- direct uploads write in a server-to-server import; WP_Filesystem adds credential prompts that cannot exist in REST context.
+			if ( ! rename( $checked, $real_dir . '/' . wp_basename( $abs ) ) ) {
+				return new WP_Error( 'wpps_write_failed', __( 'Could not move the file into place.', 'wp-page-sync' ), array( 'status' => 500 ) );
+			}
+		} finally {
+			// A sanitized SVG is a separate file; after a successful rename this is a no-op.
+			self::discard( $checked );
 		}
 
 		return true;
@@ -840,9 +1427,11 @@ class WPPS_Importer {
 	 * svg/woff2 for user 0, so the map is passed explicitly AND registered
 	 * as a scoped upload_mimes filter for the duration of the check.
 	 *
-	 * @param string $file     Path of the written temp file.
+	 * @param string $file     Path of the checked temp file.
 	 * @param string $filename Real target file name.
-	 * @return true|WP_Error
+	 * @return string|WP_Error Path of the file to move into place: $file, or
+	 *                         for an SVG a new temp file with the sanitized
+	 *                         markup.
 	 */
 	private function check_file_type( $file, $filename ) {
 		$mimes  = self::ALLOWED_MIMES;
@@ -858,9 +1447,14 @@ class WPPS_Importer {
 			return $this->check_svg( $file );
 		}
 		if ( empty( $check['ext'] ) || empty( $check['type'] ) || ! empty( $check['proper_filename'] ) ) {
-			return new WP_Error( 'wpps_type_mismatch', __( 'File content does not match its extension.', 'wp-page-sync' ), array( 'status' => 415 ) );
+			return new WP_Error(
+				'wpps_type_mismatch',
+				/* translators: %s: file name. */
+				sprintf( __( 'WordPress on the receiving site rejected %s: its content does not match the file extension, or this server cannot identify the file type.', 'wp-page-sync' ), $filename ),
+				array( 'status' => 415 )
+			);
 		}
-		return true;
+		return $file;
 	}
 
 	/**
@@ -868,12 +1462,22 @@ class WPPS_Importer {
 	 * SVG as text/plain, so accept only files starting with <?xml or <svg
 	 * (unconditionally, whatever the core check said). The sanitizer pass is
 	 * MANDATORY: without safe-svg's bundled sanitizer class the import is
-	 * rejected, and an unsanitized SVG is never written.
+	 * rejected, and an unsanitized SVG is never written. The sanitized
+	 * markup goes to a NEW temp file; the checked file is never rewritten
+	 * in place.
 	 *
 	 * @param string $file Temp file path.
-	 * @return true|WP_Error
+	 * @return string|WP_Error Path of the sanitized temp file.
 	 */
 	private function check_svg( $file ) {
+		if ( (int) filesize( $file ) > self::MAX_SVG_BYTES ) {
+			return new WP_Error(
+				'wpps_svg_too_large',
+				/* translators: %s: size limit, e.g. "5 MB". */
+				sprintf( __( 'The SVG is larger than %s and was rejected.', 'wp-page-sync' ), size_format( self::MAX_SVG_BYTES ) ),
+				array( 'status' => 413 )
+			);
+		}
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- reading our own temp file.
 		$contents = (string) file_get_contents( $file );
 		$head     = ltrim( str_replace( "\xEF\xBB\xBF", '', substr( $contents, 0, 256 ) ) );
@@ -896,12 +1500,17 @@ class WPPS_Importer {
 			return new WP_Error( 'wpps_svg_rejected', __( 'The SVG did not survive sanitization and was rejected.', 'wp-page-sync' ), array( 'status' => 415 ) );
 		}
 
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- rewriting our own temp file with the sanitized SVG.
-		if ( false === file_put_contents( $file, $clean, LOCK_EX ) ) {
+		$sanitized = self::temp_file();
+		if ( is_wp_error( $sanitized ) ) {
+			return $sanitized;
+		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writing the sanitized SVG to a new temp file of our own.
+		if ( false === file_put_contents( $sanitized, $clean, LOCK_EX ) ) {
+			self::discard( $sanitized );
 			return new WP_Error( 'wpps_write_failed', __( 'Could not write the sanitized SVG.', 'wp-page-sync' ), array( 'status' => 500 ) );
 		}
 
-		return true;
+		return $sanitized;
 	}
 
 	/**
@@ -919,7 +1528,7 @@ class WPPS_Importer {
 		$attachment_id = wp_insert_attachment(
 			array(
 				'post_mime_type' => $filetype['type'] ? $filetype['type'] : 'application/octet-stream',
-				'post_title'     => sanitize_text_field( pathinfo( $rel, PATHINFO_FILENAME ) ),
+				'post_title'     => sanitize_text_field( (string) preg_replace( '/\.[^.]+$/', '', wp_basename( $rel ) ) ),
 				'post_status'    => 'inherit',
 				'guid'           => $uploads['baseurl'] . '/' . $rel,
 			),
@@ -939,14 +1548,25 @@ class WPPS_Importer {
 	 * image/PDF branches persist internally, so the return value must be
 	 * written back explicitly).
 	 *
+	 * The attachment is first pointed at the file just written. That only
+	 * changes something for an attachment found through its original_image
+	 * (WordPress scaled the file on an earlier import): core then scales the
+	 * re-written original again and moves the pointer back to "-scaled",
+	 * and if this site no longer scales, file and metadata still agree.
+	 *
 	 * @param int    $attachment_id Attachment ID.
+	 * @param string $rel           Rel path of the written file.
 	 * @param string $abs           Absolute file path.
 	 * @return void
 	 */
-	private function regenerate_metadata( $attachment_id, $abs ) {
+	private function regenerate_metadata( $attachment_id, $rel, $abs ) {
 		require_once ABSPATH . 'wp-admin/includes/image.php';
 		require_once ABSPATH . 'wp-admin/includes/file.php';
 		require_once ABSPATH . 'wp-admin/includes/media.php';
+
+		if ( get_post_meta( $attachment_id, '_wp_attached_file', true ) !== $rel ) {
+			update_attached_file( $attachment_id, $abs );
+		}
 
 		$metadata = wp_generate_attachment_metadata( $attachment_id, $abs );
 		if ( is_array( $metadata ) ) {

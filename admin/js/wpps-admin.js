@@ -48,6 +48,7 @@
 		failed: 'failed',
 		bulkSkipped: 'Skipped as conflicts (push each one on its own and confirm the force option):',
 		bulkFailed: 'Failed:',
+		bulkWarnings: 'Pushed with warnings:',
 		bulkRunning: 'A bulk push is still running. Wait for it to finish before syncing a single post.',
 		globalsAdded: 'Added classes',
 		globalsChanged: 'Changed classes',
@@ -811,6 +812,7 @@
 		var pushed = 0;
 		var skipped = [];
 		var failed = [];
+		var warned = [];
 
 		bulkBusy = true;
 		updateBulkButton();
@@ -830,6 +832,9 @@
 			}
 			if ( failed.length ) {
 				$results.append( listBlock( cfg.i18n.bulkFailed, failed, 'wpps-report-errors' ) );
+			}
+			if ( warned.length ) {
+				$results.append( listBlock( cfg.i18n.bulkWarnings, warned, 'wpps-report-warnings' ) );
 			}
 		}
 
@@ -851,6 +856,11 @@
 				.done( function( response ) {
 					if ( response && response.success ) {
 						pushed++;
+						// One line per warning, prefixed with its post, so a long
+						// run still says which post each one belongs to.
+						$.each( ( response.data && response.data.warnings ) || [], function( _, warning ) {
+							warned.push( item.path + ': ' + warning );
+						} );
 					} else if ( response && response.data && 'wpps_conflict' === response.data.code ) {
 						skipped.push( item.path + ': ' + responseMessage( response ) );
 					} else {
@@ -1107,9 +1117,13 @@
 			$body.empty();
 			$.each( response.data.entries || [], function( _, entry ) {
 				var $tr = $( '<tr>' );
+				var $message = $( '<td>' ).text( entry.message );
+				if ( entry.warnings && entry.warnings.length ) {
+					$message.append( listBlock( '', entry.warnings, 'wpps-report-warnings' ) );
+				}
 				$tr.append( $( '<td>' ).text( entry.time ) );
 				$tr.append( $( '<td>' ).append( $( '<code>' ).text( entry.type ) ) );
-				$tr.append( $( '<td>' ).text( entry.message ) );
+				$tr.append( $message );
 				$body.append( $tr );
 			} );
 		} ).fail( function( xhr ) {

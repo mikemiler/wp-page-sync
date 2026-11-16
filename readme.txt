@@ -4,7 +4,7 @@ Tags: sync, migration, staging, media, generateblocks
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.2.0
+Stable tag: 1.3.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -17,19 +17,26 @@ then syncs pages and posts in both directions between them. Push a post to the
 connected site or pull the peer's copy back, one at a time or as a bulk
 selection that respects the parent order.
 
-The upload files a post references travel with it. Images and linked files such
-as PDFs are transferred with their sha256 checksum and re-attached on the
-receiving side, where their URLs are rewritten to that site's own domain and
-uploads path. Two kinds of reference stay behind. A file whose name or file type
-is outside the transfer whitelist (an umlaut in the file name, an extension the
-plugin does not carry) is left on the source site and its URL keeps pointing
-there; the sync dialog names it as a pre-flight warning beforehand and the
-verifier reports the leftover URL afterwards. A reference written without a host
-(`/wp-content/uploads/…` instead of a full URL) is not recognised at all, so its
-file is neither transferred nor reported.
+The upload files a post references travel with it. Images, videos, audio and
+linked files such as PDFs are transferred with their sha256 checksum and
+re-attached on the receiving side, where their URLs are rewritten to that site's
+own domain and uploads path. An image used in several sizes, or a large photo
+that WordPress stores as a "-scaled" copy next to its original, is transferred
+once and every size of it points at the receiving site's copy. The image's
+title, alt text, caption and description travel along. Files are sent in pieces
+of 1 MB, so the receiving server's upload limit does not cap the file size; a
+single file may be up to 256 MB, and a larger one blocks the sync in the
+pre-flight check. Two kinds of reference stay behind. A file whose name or file
+type is outside the transfer whitelist (special characters in the file name, an
+extension the plugin does not carry) is left on the source site and its URL
+keeps pointing there; the sync dialog names it as a pre-flight warning
+beforehand and the verifier reports the leftover URL afterwards. A reference
+written without a host (`/wp-content/uploads/…` instead of a full URL) is not
+recognised at all, so its file is neither transferred nor reported.
 
-Along with the content, a post keeps its publish date and its categories and
-tags. They replace the post's categories and tags on the receiving site, so a
+Along with the content, a post keeps its publish date, its password, whether
+comments and pingbacks are open, and its categories and tags. Everything a sync
+does not carry (the author, for example) stays as it is on the receiving post. They replace the post's categories and tags on the receiving site, so a
 category or tag that exists only there is removed from the post. Terms are
 matched by slug; a missing one is created, an existing one is never renamed. A
 created category always sits at the top level: the category hierarchy is not
@@ -50,8 +57,9 @@ deleted. The color palette is the exception to that rule: it is replaced as a
 whole instead of merged, so colors that exist only on the target are lost.
 
 Both copies are compared by a content hash over title, path, status, content,
-excerpt and the featured image file (the date, the terms and the
-attachment IDs in media blocks are not part of it), so the plugin knows whether a post is in sync, changed on one side,
+excerpt, the featured image file, the password and the comment and pingback
+settings (the date, the terms, the image texts and the attachment IDs in media
+blocks are not part of it), so the plugin knows whether a post is in sync, changed on one side,
 or changed on both. A conflict is reported instead of silently overwritten, and
 overwriting requires an explicit confirmation. Post meta is not part of that
 hash: two copies can be reported as in sync while their custom fields differ,
@@ -107,6 +115,19 @@ Updates are delivered via GitHub, not wordpress.org.
    unaffected.
 
 == Changelog ==
+
+= 1.3.0 =
+* Fix: an image used at a size such as "large" now arrives as well when WordPress stores it as a "-scaled" copy (photos wider or taller than 2560 pixels). Before, the size URL kept pointing at the sending site. Every size of an image, its untouched original and size files no longer listed by WordPress now point at the receiving site's copy, and the image is transferred and created once even when the post uses it in several sizes and as featured image.
+* Fix: a page whose address equals the name of one of its images (a page "pricing" with an image "pricing.png") no longer lands at "pricing-2" and duplicates with every sync. The image entry moves aside and the page keeps its address. When a real page or post holds the address, the sync says so instead.
+* Fix: updating an existing post no longer resets what the sync does not carry: the author, and for a sending site before 1.3.0 also the comment and pingback settings, stay as they are on the receiving site.
+* New: the post password and the comment and pingback settings are synced, so a password-protected page stays protected on the connected site. They are part of the content hash.
+* New: files are sent in pieces of 1 MB and pulled straight to disk, so videos and large PDFs up to 256 MB per file transfer independent of the receiving server's upload limit. A larger file is a blocking problem in the sync preview. A request the receiving server cuts short now reports that its size limit is too small instead of "Unauthorized".
+* New: audio (MP3, M4A, OGG, WAV), AVIF images and MOV, M4V and OGV videos travel with the post. File names with letters of any language (umlauts, accents, other scripts) and "@" (for example "logo@2x.png") are transferred too.
+* New: the title, alt text, caption and description of a synced image or file are applied to the receiving site's copy on every sync.
+* Improvement: warnings of a sync are no longer lost. A bulk push lists them per post, the editor's one-click pull shows them and reloads only after a click, and the log stores them with each entry.
+* Note: update both connected sites. A site before 1.3.0 cannot receive a pushed file: the push stops before anything is written and asks for the update. The content hash changes once with this update; posts whose copies are otherwise equal show as "In sync (adopted)" once both sites run 1.3.0.
+* Note: posts whose password, comment or pingback settings differ between the two sites show as "Diverged" after the update, because these settings are now part of the content hash. This is common for posts re-synced under 1.2.0, which closed comments on the receiving post. Push each of them once with the force option; a bulk push skips them as conflicts.
+* Note: an image that 1.2.0 synced only in a size such as "large" (and that WordPress stores as a "-scaled" copy) is transferred once more on the first 1.3.0 sync and stored next to the old copy as "…-scaled-wpps<code>.jpg". The old copy is not deleted and nothing is overwritten; it is no longer used by the post.
 
 = 1.2.0 =
 * New: a sync now carries the post's categories and tags and replaces the receiving post's categories and tags with them. They are matched by slug on the receiving site, missing ones are created there at the top level (the category hierarchy is not carried), and existing ones are never renamed. A sending site on an older version sends no terms, so the receiving site leaves them unchanged.

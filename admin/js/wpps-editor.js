@@ -27,7 +27,10 @@
 		dismiss: 'Continue editing',
 		confirmPull: 'Pulling replaces this post with the version from the connected site and reloads the editor. Anything not saved here yet is lost. Continue?',
 		working: 'Pulling…',
-		error: 'The pull failed. Nothing was changed here.'
+		error: 'The pull failed. Nothing was changed here.',
+		pulledTitle: 'Pulled, with warnings',
+		pulledIntro: 'The post was pulled, but the sync reported the following. Reload the editor to see the pulled version; saving the editor as it is would overwrite it.',
+		reload: 'Reload now'
 	};
 
 	var STATUS_DEFAULTS = {
@@ -67,6 +70,10 @@
 	// True while a pull request is in flight.
 	var pulling = false;
 
+	// True once a pull succeeded with warnings: the editor now shows stale
+	// content, so the only way out is the reload button.
+	var pulled = false;
+
 	/**
 	 * Locks or unlocks the modal for the duration of a pull.
 	 *
@@ -88,7 +95,7 @@
 	}
 
 	function closeModal() {
-		if ( pulling ) {
+		if ( pulling || pulled ) {
 			return;
 		}
 		$( '#wpps-editor-overlay' ).remove();
@@ -98,6 +105,34 @@
 		return $( '<span>' )
 			.addClass( 'wpps-badge wpps-badge-' + status )
 			.text( statuses[ status ] || status );
+	}
+
+	/**
+	 * Replaces the notice with the pull's warnings and a reload button.
+	 *
+	 * The reload waits for the user so the warnings can be read. The modal
+	 * stays shut otherwise: dismissing it would leave the editor on the old
+	 * content, and saving that would overwrite the version just pulled.
+	 *
+	 * @param {string[]} warnings Warning messages of the pull.
+	 * @return {void}
+	 */
+	function showPullWarnings( warnings ) {
+		var $modal = $( '#wpps-editor-overlay .wpps-modal' ).empty();
+		var $list = $( '<ul>' );
+
+		pulled = true;
+		$.each( warnings, function( _, warning ) {
+			$list.append( $( '<li>' ).text( warning ) );
+		} );
+
+		$modal.append( $( '<h2>' ).attr( 'id', 'wpps-editor-title' ).text( i18n.pulledTitle ) );
+		$modal.append( $( '<p>' ).text( i18n.pulledIntro ) );
+		$modal.append( $( '<div>' ).addClass( 'wpps-report-warnings' ).append( $list ) );
+		$modal.append(
+			$( '<p>' ).addClass( 'wpps-modal-actions' )
+				.append( $( '<button>' ).attr( 'type', 'button' ).addClass( 'button button-primary' ).attr( 'id', 'wpps-editor-reload' ).text( i18n.reload ) )
+		);
 	}
 
 	/**
@@ -112,6 +147,8 @@
 	 *
 	 * A conflict (wpps_conflict) or any other error keeps the editor exactly
 	 * as it is and only reports the message: nothing was written locally.
+	 * A pull that succeeded with warnings shows them and reloads only when
+	 * the user confirms (showPullWarnings()).
 	 *
 	 * @param {Object} data   Check payload (post_type, path).
 	 * @param {string} peerId Peer to pull from.
@@ -133,6 +170,13 @@
 			path: data.path,
 			force: 0
 		} ).done( function( response ) {
+			var warnings = ( response && response.success && response.data && response.data.warnings ) || [];
+
+			if ( response && response.success && warnings.length ) {
+				setBusy( false );
+				showPullWarnings( warnings );
+				return;
+			}
 			if ( response && response.success ) {
 				// Unlock before the reload, not after: the reload fires
 				// beforeunload, and the editor's unsaved-changes guard can turn
@@ -224,6 +268,9 @@
 	}
 
 	$( document ).on( 'click', '#wpps-editor-dismiss', closeModal );
+	$( document ).on( 'click', '#wpps-editor-reload', function() {
+		window.location.reload();
+	} );
 	$( document ).on( 'click', '#wpps-editor-overlay', function( event ) {
 		if ( event.target === this ) {
 			closeModal();

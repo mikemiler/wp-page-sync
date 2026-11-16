@@ -242,10 +242,10 @@ class WPPS_Peers {
 		if ( ! is_array( $data ) || 1 !== (int) ( $data['v'] ?? 0 ) ) {
 			return $invalid;
 		}
-		if ( ! preg_match( '/^[0-9a-f]{8}$/', (string) ( $data['key_id'] ?? '' ) ) ) {
+		if ( ! preg_match( '/^[0-9a-f]{8}$/D', (string) ( $data['key_id'] ?? '' ) ) ) {
 			return $invalid;
 		}
-		if ( ! preg_match( '/^[0-9a-f]{64}$/', (string) ( $data['secret'] ?? '' ) ) ) {
+		if ( ! preg_match( '/^[0-9a-f]{64}$/D', (string) ( $data['secret'] ?? '' ) ) ) {
 			return $invalid;
 		}
 

@@ -98,7 +98,10 @@ class WPPS_Rewriter {
 	 *
 	 * Longest source path first so size variants win over their original.
 	 * Matches all three URL forms; a JSON-escaped occurrence is replaced with
-	 * the JSON-escaped target URL.
+	 * the JSON-escaped target URL. A path byte outside [A-Za-z0-9._~-] (a
+	 * non-ASCII letter, "@") matches raw or percent-encoded in either hex
+	 * case, and an occurrence found percent-encoded gets the target URL in
+	 * the same encoding.
 	 *
 	 * @param string $subject Content string.
 	 * @param array  $map     source URL => target URL.
@@ -116,28 +119,24 @@ class WPPS_Rewriter {
 
 		foreach ( $sources as $source ) {
 			$host = self::bare_host( $source );
-			$path = (string) wp_parse_url( $source, PHP_URL_PATH );
+			$path = self::url_path( $source );
 			if ( '' === $host || '' === $path ) {
 				continue;
 			}
 
-			$path_regex = '';
-			foreach ( str_split( $path ) as $char ) {
-				$path_regex .= ( '/' === $char ) ? '(?:\\\\?/)' : preg_quote( $char, '~' );
-			}
-
 			// The trailing lookahead keeps "img.jpg" from matching inside "img.jpg.webp".
 			$pattern = '~(?:https?:)?(?:\\\\?/){2}(?:www\.)?' . preg_quote( $host, '~' )
-				. '(?![a-zA-Z0-9.-])(?::\d+)?' . $path_regex . '(?![A-Za-z0-9._\~%-])~i';
+				. '(?![a-zA-Z0-9.-])(?::\d+)?' . self::path_regex( $path ) . '(?![A-Za-z0-9._\~%@\x80-\xFF-])~i';
 
 			$target = (string) $map[ $source ];
 			$result = preg_replace_callback(
 				$pattern,
 				function ( $matched ) use ( $target ) {
+					$replacement = ( false !== strpos( $matched[0], '%' ) ) ? self::encode_url_path( $target ) : $target;
 					if ( false !== strpos( $matched[0], '\/' ) ) {
-						return str_replace( '/', '\/', $target );
+						return str_replace( '/', '\/', $replacement );
 					}
-					return $target;
+					return $replacement;
 				},
 				$subject
 			);
@@ -147,6 +146,75 @@ class WPPS_Rewriter {
 		}
 
 		return $subject;
+	}
+
+	/**
+	 * Path of an absolute or protocol-relative URL, cut by string position.
+	 *
+	 * Not wp_parse_url(): PHP's parse_url() on macOS/BSD replaces the bytes
+	 * 0x80-0x9F with "_", which mangles UTF-8 file and page names such as
+	 * "größe.jpg" or "фото.jpg".
+	 *
+	 * @param string $url URL.
+	 * @return string Path without query and fragment, "" when there is none.
+	 */
+	public static function url_path( $url ) {
+		$url        = (string) $url;
+		$scheme_end = strpos( $url, '//' );
+		if ( false === $scheme_end ) {
+			return '';
+		}
+		$authority_end = $scheme_end + 2 + strcspn( $url, '/?#', $scheme_end + 2 );
+		$rest          = (string) substr( $url, $authority_end );
+		if ( '' === $rest || '/' !== $rest[0] ) {
+			return '';
+		}
+		return (string) preg_split( '/[?#]/', $rest )[0];
+	}
+
+	/**
+	 * Regex for a URL path in all forms the media-map pass accepts: "/" may
+	 * be JSON-escaped, any byte outside the unreserved set may be raw or
+	 * percent-encoded (the pattern runs with /i, so %c3 and %C3 both match).
+	 *
+	 * @param string $path Raw (decoded) URL path.
+	 * @return string Regex fragment for ~ delimiters.
+	 */
+	private static function path_regex( $path ) {
+		$regex = '';
+		foreach ( str_split( $path ) as $char ) {
+			if ( '/' === $char ) {
+				$regex .= '(?:\\\\?/)';
+			} elseif ( preg_match( '/[A-Za-z0-9._~-]/', $char ) ) {
+				$regex .= preg_quote( $char, '~' );
+			} else {
+				$regex .= '(?:' . preg_quote( $char, '~' ) . '|%' . strtoupper( bin2hex( $char ) ) . ')';
+			}
+		}
+		return $regex;
+	}
+
+	/**
+	 * Percent-encodes the non-ASCII bytes and "@" in a URL's path, for a
+	 * target written back into an occurrence that was percent-encoded.
+	 *
+	 * @param string $url Absolute URL.
+	 * @return string
+	 */
+	private static function encode_url_path( $url ) {
+		$scheme_end = strpos( $url, '//' );
+		$path_start = strpos( $url, '/', ( false === $scheme_end ) ? 0 : $scheme_end + 2 );
+		if ( false === $path_start ) {
+			return $url;
+		}
+		$encoded = preg_replace_callback(
+			'/[\x80-\xFF@]/',
+			function ( $byte ) {
+				return '%' . strtoupper( bin2hex( $byte[0] ) );
+			},
+			substr( $url, $path_start )
+		);
+		return substr( $url, 0, $path_start ) . $encoded;
 	}
 
 	/**

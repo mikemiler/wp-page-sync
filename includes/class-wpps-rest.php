@@ -271,6 +271,7 @@ class WPPS_Rest {
 			)
 		);
 
+		// Single-request upload of senders before 1.3.0, kept for them.
 		register_rest_route(
 			WPPS_REST_NS,
 			'/media-upload',
@@ -280,20 +281,68 @@ class WPPS_Rest {
 				'permission_callback' => array( $this, 'permission_peer_write' ),
 				'args'                => array(
 					'rel_path' => $this->rel_path_arg(),
-					'sha256'   => array(
-						'type'              => 'string',
-						'required'          => true,
-						'validate_callback' => array( $this, 'validate_sha256_arg' ),
-						'sanitize_callback' => 'sanitize_text_field',
+					'sha256'   => $this->sha256_arg(),
+					'mime'     => $this->mime_arg(),
+				),
+			)
+		);
+
+		register_rest_route(
+			WPPS_REST_NS,
+			'/media-chunk',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'handle_media_chunk' ),
+				'permission_callback' => array( $this, 'permission_peer_write' ),
+				'args'                => array(
+					'rel_path'  => $this->rel_path_arg(),
+					'sha256'    => $this->sha256_arg(),
+					'mime'      => $this->mime_arg(),
+					'upload_id' => array(
+						'type'     => 'string',
+						'required' => true,
+						'pattern'  => '^[0-9a-f]{32}\\z',
 					),
-					'mime'     => array(
-						'type'              => 'string',
-						'required'          => true,
-						'validate_callback' => array( $this, 'validate_mime_arg' ),
-						'sanitize_callback' => 'sanitize_text_field',
+					'offset'    => array(
+						'type'     => 'integer',
+						'required' => true,
+						'minimum'  => 0,
+					),
+					'total'     => array(
+						'type'     => 'integer',
+						'required' => true,
+						'minimum'  => 1,
 					),
 				),
 			)
+		);
+	}
+
+	/**
+	 * Shared sha256 route arg.
+	 *
+	 * @return array
+	 */
+	private function sha256_arg() {
+		return array(
+			'type'              => 'string',
+			'required'          => true,
+			'validate_callback' => array( $this, 'validate_sha256_arg' ),
+			'sanitize_callback' => 'sanitize_text_field',
+		);
+	}
+
+	/**
+	 * Shared mime route arg (informational; the type gate decides).
+	 *
+	 * @return array
+	 */
+	private function mime_arg() {
+		return array(
+			'type'              => 'string',
+			'required'          => true,
+			'validate_callback' => array( $this, 'validate_mime_arg' ),
+			'sanitize_callback' => 'sanitize_text_field',
 		);
 	}
 
@@ -367,6 +416,11 @@ class WPPS_Rest {
 	 * @return true|WP_Error
 	 */
 	public function permission_peer( $request ) {
+		$incomplete = $this->incomplete_body_error( $request );
+		if ( $incomplete ) {
+			return $incomplete;
+		}
+
 		$key_id = (string) $request->get_header( 'X-WPPS-Key-Id' );
 		$peer   = '' === $key_id ? null : $this->peers->get_peer( $key_id );
 
@@ -378,8 +432,46 @@ class WPPS_Rest {
 		}
 
 		$this->peers->touch( $key_id );
+		// Authenticated sync requests hash and move whole media files.
+		wpps_raise_limits();
 
 		return true;
+	}
+
+	/**
+	 * Detects a request body the server dropped or cut short before
+	 * WordPress saw it, so it is reported as a size problem and not as a
+	 * failed signature ("Unauthorized"). PHP discards the whole body of a
+	 * request above post_max_size, while the Content-Length header still
+	 * states what the sender sent. It runs before authentication and reveals
+	 * nothing about the authentication state, and the message names no
+	 * configured value. Accepted deviation: by probing with growing bodies,
+	 * an unauthenticated caller can still find the effective body-size limit,
+	 * which a plain 401 would hide; the clear error for the paired admin is
+	 * worth more than hiding a limit that is no secret.
+	 *
+	 * @param WP_REST_Request $request Incoming request.
+	 * @return WP_Error|null
+	 */
+	private function incomplete_body_error( WP_REST_Request $request ) {
+		$declared = (int) $request->get_header( 'Content-Length' );
+		$received = strlen( $request->get_body() );
+
+		if ( $declared > WPPS_MAX_BODY_BYTES || $received > WPPS_MAX_BODY_BYTES ) {
+			return new WP_Error( 'wpps_too_large', __( 'The request is too large for this site.', 'wp-page-sync' ), array( 'status' => 413 ) );
+		}
+		if ( $declared > 0 && $declared !== $received ) {
+			return new WP_Error(
+				'wpps_body_incomplete',
+				sprintf(
+					/* translators: %s: size of the request that was sent. */
+					__( 'The file is too large for the receiving server: a %s request did not arrive completely. Its upload limit (PHP post_max_size or a proxy body-size limit) is smaller than that.', 'wp-page-sync' ),
+					size_format( $declared, 1 )
+				),
+				array( 'status' => 413 )
+			);
+		}
+		return null;
 	}
 
 	/**
@@ -469,7 +561,7 @@ class WPPS_Rest {
 	 * @return bool
 	 */
 	public function validate_sha256_arg( $value ) {
-		return is_string( $value ) && (bool) preg_match( '/^[0-9a-f]{64}$/', $value );
+		return is_string( $value ) && (bool) preg_match( '/^[0-9a-f]{64}$/D', $value );
 	}
 
 	/**
@@ -682,7 +774,7 @@ class WPPS_Rest {
 
 		$result = $this->globals->import( $bundle );
 		/* translators: %s: peer name or id. */
-		WPPS_Log::add( 'globals_import', sprintf( __( 'Global styles imported from peer %s.', 'wp-page-sync' ), $this->peer_label( $request ) ) );
+		WPPS_Log::add( 'globals_import', sprintf( __( 'Global styles imported from peer %s.', 'wp-page-sync' ), $this->peer_label( $request ) ), $result['warnings'] );
 
 		return rest_ensure_response( $result );
 	}
@@ -716,7 +808,7 @@ class WPPS_Rest {
 		);
 
 		/* translators: 1: post path, 2: peer name or id. */
-		WPPS_Log::add( 'import', sprintf( __( 'Received %1$s from peer %2$s.', 'wp-page-sync' ), (string) $bundle['post']['path'], $this->peer_label( $request ) ) );
+		WPPS_Log::add( 'import', sprintf( __( 'Received %1$s from peer %2$s.', 'wp-page-sync' ), (string) $bundle['post']['path'], $this->peer_label( $request ) ), $result['warnings'] );
 
 		return rest_ensure_response( $result );
 	}
@@ -779,28 +871,43 @@ class WPPS_Rest {
 
 	/**
 	 * POST /media-upload (W): one file as raw binary body (plan §5), with
-	 * rel_path/sha256/mime as signed query args. Idempotent.
+	 * rel_path/sha256/mime as signed query args. Idempotent. Used by senders
+	 * before 1.3.0 only; the body size is bounded by the signer's
+	 * WPPS_MAX_BODY_BYTES guard.
 	 *
 	 * @param WP_REST_Request $request Incoming request.
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public function handle_media_upload( WP_REST_Request $request ) {
-		$binary = $request->get_body();
-		if ( strlen( $binary ) > WPPS_MAX_FILE_BYTES ) {
-			return new WP_Error( 'wpps_too_large', __( 'File exceeds the size limit.', 'wp-page-sync' ), array( 'status' => 413 ) );
+		$temp = WPPS_Importer::temp_file();
+		if ( is_wp_error( $temp ) ) {
+			return $temp;
+		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- our own temp file inside uploads; import_media() consumes it.
+		if ( false === file_put_contents( $temp, $request->get_body(), LOCK_EX ) ) {
+			WPPS_Importer::discard( $temp );
+			return new WP_Error( 'wpps_write_failed', __( 'Could not store the received file.', 'wp-page-sync' ), array( 'status' => 500 ) );
 		}
 
-		$result = $this->importer->import_media(
-			(string) $request->get_param( 'rel_path' ),
-			(string) $request->get_param( 'sha256' ),
-			(string) $request->get_param( 'mime' ),
-			$binary
+		return rest_ensure_response(
+			$this->importer->import_media( (string) $request->get_param( 'rel_path' ), (string) $request->get_param( 'sha256' ), $temp )
 		);
-		if ( is_wp_error( $result ) ) {
-			return $result;
-		}
+	}
 
-		return rest_ensure_response( $result );
+	/**
+	 * POST /media-chunk (W, 1.3.0): one piece of a file as raw binary body,
+	 * with rel_path/sha256/mime/upload_id/offset/total as signed query args.
+	 * The completing piece answers with the import result.
+	 *
+	 * @param WP_REST_Request $request Incoming request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function handle_media_chunk( WP_REST_Request $request ) {
+		$chunk = array( 'peer_id' => (string) $request->get_header( 'X-WPPS-Key-Id' ) );
+		foreach ( array( 'upload_id', 'rel_path', 'sha256', 'offset', 'total' ) as $key ) {
+			$chunk[ $key ] = $request->get_param( $key );
+		}
+		return rest_ensure_response( $this->importer->receive_chunk( $chunk, $request->get_body() ) );
 	}
 
 	/**
