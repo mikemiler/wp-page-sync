@@ -25,6 +25,8 @@
 		noPeer: 'Connect a site first (Connections tab).',
 		noPosts: 'No posts found.',
 		filterEmpty: 'No posts match the current filter.',
+		sortAsc: 'Sort ascending.',
+		sortDesc: 'Sort descending.',
 		filterCount: 'Showing %1$s of %2$s posts.',
 		push: 'Push',
 		pull: 'Pull',
@@ -504,7 +506,8 @@
 			.attr( 'data-path', item.path )
 			.attr( 'data-post-type', item.post_type )
 			.attr( 'data-sync-status', item.sync_status )
-			.attr( 'data-title', title );
+			.attr( 'data-title', title )
+			.attr( 'data-modified', item.modified_gmt || '' );
 		var unsyncable = 'no_slug' === item.sync_status;
 
 		$tr.append( $( '<td>' ).addClass( 'check-column' ).append(
@@ -567,6 +570,7 @@
 				$.each( response.data.items, function( _, item ) {
 					$body.append( renderStatusRow( item ) );
 				} );
+				sortRows();
 			}
 			// Re-apply the active filter so a reload does not reset the view.
 			rebuildStatusOptions();
@@ -575,6 +579,122 @@
 			feedback( $fb, failMessage( xhr ), false );
 		} );
 	}
+
+	/* ------------------------------------------------------------------ *
+	 * Status-list sorting (client-side)
+	 *
+	 * Display order only: the bulk push sorts its own queue parents first.
+	 * Every "Load status" (also the one after a push or pull) re-applies the
+	 * chosen sort; it lives for the page view, not across page loads.
+	 * ------------------------------------------------------------------ */
+
+	// Direction of the first click per column; newest first is the natural
+	// start for dates.
+	var SORT_FIRST_DIR = { title: 'asc', path: 'asc', modified: 'desc', status: 'asc' };
+	var sortState = { key: 'modified', dir: 'desc' };
+
+	// One collator for all comparisons: localeCompare with options would
+	// rebuild the collation rules on every call.
+	var collator = new window.Intl.Collator( undefined, { numeric: true, sensitivity: 'base' } );
+
+	// Status => position in cfg.statuses (the single label and order source),
+	// rebuilt once per sort by sortRows(); unknown statuses get statusCount.
+	var statusOrder = {};
+	var statusCount = 0;
+
+	function compareText( a, b ) {
+		return collator.compare( a || '', b || '' );
+	}
+
+	// Unknown statuses sort last.
+	function statusRank( status ) {
+		return Object.prototype.hasOwnProperty.call( statusOrder, status ) ? statusOrder[ status ] : statusCount;
+	}
+
+	// A zero date counts as no date.
+	function modifiedValue( row ) {
+		var value = row.getAttribute( 'data-modified' ) || '';
+		return 0 === value.indexOf( '0000' ) ? '' : value;
+	}
+
+	function compareRows( a, b ) {
+		var key = sortState.key;
+		var result;
+
+		if ( 'modified' === key ) {
+			var am = modifiedValue( a );
+			var bm = modifiedValue( b );
+			if ( ! am !== ! bm ) {
+				// Rows without a date stay last in both directions.
+				return am ? -1 : 1;
+			}
+			result = am < bm ? -1 : ( am > bm ? 1 : 0 );
+		} else if ( 'status' === key ) {
+			result = statusRank( a.getAttribute( 'data-sync-status' ) ) - statusRank( b.getAttribute( 'data-sync-status' ) );
+		} else {
+			result = compareText( a.getAttribute( 'data-' + key ), b.getAttribute( 'data-' + key ) );
+		}
+		if ( 'desc' === sortState.dir ) {
+			result = -result;
+		}
+		// Stable tie-break, independent of the direction.
+		return result ||
+			compareText( a.getAttribute( 'data-title' ), b.getAttribute( 'data-title' ) ) ||
+			compareText( a.getAttribute( 'data-path' ), b.getAttribute( 'data-path' ) );
+	}
+
+	function sortRows() {
+		var $body = $( '#wpps-posts-body' );
+		var rows = $body.children( '.wpps-status-row' ).get();
+
+		statusOrder = {};
+		statusCount = 0;
+		$.each( cfg.statuses, function( status ) {
+			statusOrder[ status ] = statusCount++;
+		} );
+		rows.sort( compareRows );
+		$body.append( rows );
+		// The "no match" row stays last.
+		$body.append( $( '#wpps-filter-empty' ) );
+	}
+
+	function updateSortHeaders() {
+		$( '.wpps-posts-table th[data-wpps-sort]' ).each( function() {
+			var $th = $( this );
+			var key = $th.attr( 'data-wpps-sort' );
+			var active = key === sortState.key;
+			var next = SORT_FIRST_DIR[ key ];
+
+			if ( active ) {
+				next = 'asc' === sortState.dir ? 'desc' : 'asc';
+			}
+			// Same classes as WP_List_Table::print_column_headers().
+			$th.removeClass( 'sortable sorted asc desc' )
+				.addClass( active ? 'sorted ' + sortState.dir : 'sortable ' + ( 'asc' === next ? 'desc' : 'asc' ) );
+			if ( active ) {
+				$th.attr( 'aria-sort', 'asc' === sortState.dir ? 'ascending' : 'descending' );
+			} else {
+				$th.removeAttr( 'aria-sort' );
+			}
+			$th.find( '.wpps-sort-hint' ).text( 'asc' === next ? cfg.i18n.sortAsc : cfg.i18n.sortDesc );
+		} );
+	}
+
+	$( document ).on( 'click', '.wpps-posts-table th[data-wpps-sort] a', function( event ) {
+		var key = $( this ).closest( 'th' ).attr( 'data-wpps-sort' );
+
+		event.preventDefault();
+		if ( key === sortState.key ) {
+			sortState.dir = 'asc' === sortState.dir ? 'desc' : 'asc';
+		} else {
+			sortState.key = key;
+			sortState.dir = SORT_FIRST_DIR[ key ];
+		}
+		updateSortHeaders();
+		sortRows();
+	} );
+
+	$( updateSortHeaders );
 
 	$( document ).on( 'click', '#wpps-load-status', loadStatus );
 	$( document ).on( 'change', '#wpps-peer-select, #wpps-post-type-select', function() {

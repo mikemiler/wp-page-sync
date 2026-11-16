@@ -166,6 +166,8 @@ class WPPS_Admin {
 					'noPeer'            => __( 'Connect a site first (Connections tab).', 'wp-page-sync' ),
 					'noPosts'           => __( 'No posts found.', 'wp-page-sync' ),
 					'filterEmpty'       => __( 'No posts match the current filter.', 'wp-page-sync' ),
+					'sortAsc'           => __( 'Sort ascending.', 'wp-page-sync' ),
+					'sortDesc'          => __( 'Sort descending.', 'wp-page-sync' ),
 					/* translators: 1: number of posts matching the filter, 2: total number of listed posts. */
 					'filterCount'       => __( 'Showing %1$s of %2$s posts.', 'wp-page-sync' ),
 					'push'              => __( 'Push', 'wp-page-sync' ),
@@ -469,8 +471,9 @@ class WPPS_Admin {
 	/**
 	 * AJAX: set, replace or remove the HTTP Basic Auth credentials of an
 	 * existing connection (same rules as the connect form: both fields =
-	 * set, both empty = remove). The response and the log carry the new
-	 * state and username only, never the password.
+	 * set, both empty = remove). The response carries the new state label
+	 * and the log the username only, never the password. Removing when
+	 * nothing is stored answers success=false, so the JS skips its ping.
 	 *
 	 * @return void
 	 */
@@ -481,6 +484,11 @@ class WPPS_Admin {
 		$peer_id = isset( $_POST['peer_id'] ) ? sanitize_text_field( wp_unslash( $_POST['peer_id'] ) ) : '';
 		$peer    = $this->get_valid_peer( $peer_id );
 		$auth    = $this->posted_basic_auth();
+
+		$error = self::basic_auth_change_error( $peer, $auth );
+		if ( null !== $error ) {
+			wp_send_json_error( array( 'message' => $error ) );
+		}
 
 		// Replace the whole record: removing credentials must drop both keys, which update_peer() cannot.
 		unset( $peer['basic_auth_user'], $peer['basic_auth_pass'] );
@@ -500,12 +508,40 @@ class WPPS_Admin {
 
 		wp_send_json_success(
 			array(
-				'message'         => $message,
-				'basic_auth'      => (bool) $auth,
-				'basic_auth_user' => $auth ? $auth['basic_auth_user'] : '',
-				'label'           => self::basic_auth_label( $peer ),
+				'message' => $message,
+				'label'   => self::basic_auth_label( $peer ),
 			)
 		);
+	}
+
+	/**
+	 * Why a Basic Auth change must not be stored, or null when it may.
+	 *
+	 * Removing needs stored credentials. Setting needs the peer's rest_url on
+	 * the host of its listed url: requests (and the credentials) go to
+	 * rest_url, while the Connections table only shows url, so the admin
+	 * could otherwise hand the credentials to a host they do not see.
+	 *
+	 * @param array $peer Stored peer record.
+	 * @param array $auth Posted credentials, empty for "remove".
+	 * @return string|null Error message.
+	 */
+	private static function basic_auth_change_error( array $peer, array $auth ) {
+		if ( ! $auth ) {
+			return WPPS_Client::has_basic_auth( $peer ) ? null : __( 'No Basic Auth stored.', 'wp-page-sync' );
+		}
+
+		$rest_host = strtolower( (string) wp_parse_url( (string) $peer['rest_url'], PHP_URL_HOST ) );
+		$url_host  = strtolower( (string) wp_parse_url( (string) $peer['url'], PHP_URL_HOST ) );
+		if ( $rest_host !== $url_host ) {
+			return sprintf(
+				/* translators: 1: host the connection sends its requests to, 2: host of the listed site URL. */
+				__( 'This connection sends its requests to %1$s, not to the listed site %2$s. Disconnect and connect again before setting Basic Auth.', 'wp-page-sync' ),
+				$rest_host,
+				$url_host
+			);
+		}
+		return null;
 	}
 
 	/**
