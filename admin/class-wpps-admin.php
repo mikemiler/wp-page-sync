@@ -169,6 +169,8 @@ class WPPS_Admin {
 					'noPosts'           => __( 'No posts found.', 'wp-page-sync' ),
 					'filterEmpty'       => __( 'No posts match the current filter.', 'wp-page-sync' ),
 					'sortAsc'           => __( 'Sort ascending.', 'wp-page-sync' ),
+					'edit'              => __( 'Edit', 'wp-page-sync' ),
+					'viewOnPeer'        => __( 'View on peer', 'wp-page-sync' ),
 					'sortDesc'          => __( 'Sort descending.', 'wp-page-sync' ),
 					/* translators: 1: number of posts matching the filter, 2: total number of listed posts. */
 					'filterCount'       => __( 'Showing %1$s of %2$s posts.', 'wp-page-sync' ),

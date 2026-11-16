@@ -16,7 +16,7 @@ defined( 'ABSPATH' ) || exit;
 		<label for="wpps-peer-select"><?php esc_html_e( 'Peer', 'wp-page-sync' ); ?></label>
 		<select id="wpps-peer-select">
 			<?php foreach ( $peers as $peer ) : ?>
-				<option value="<?php echo esc_attr( $peer['peer_id'] ); ?>"><?php echo esc_html( $peer['name'] ? $peer['name'] : $peer['url'] ); ?></option>
+				<option value="<?php echo esc_attr( $peer['peer_id'] ); ?>" data-host="<?php echo esc_attr( WPPS_Rewriter::bare_host( (string) $peer['url'] ) ); ?>"><?php echo esc_html( $peer['name'] ? $peer['name'] : $peer['url'] ); ?></option>
 			<?php endforeach; ?>
 		</select>
 		<label for="wpps-post-type-select"><?php esc_html_e( 'Post type', 'wp-page-sync' ); ?></label>

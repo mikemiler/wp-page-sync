@@ -39,6 +39,12 @@
 	max-width: 1100px;
 }
 
+/* Core shows row actions on hover only; keep them visible for keyboard focus too. */
+.wpps-posts-table tr:focus-within .row-actions,
+.wpps-peer-posts-table tr:focus-within .row-actions {
+	position: static;
+}
+
 .wpps-peers-table .wpps-row-feedback {
 	display: inline-block;
 }

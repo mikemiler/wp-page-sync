@@ -209,6 +209,18 @@ class WPPS_Exporter {
 	}
 
 	/**
+	 * Public permalink of a published post, "" otherwise: a preview link
+	 * only works for a user logged in on this site, so a peer has no use
+	 * for it (1.6.0, additive url field of /posts and /status items).
+	 *
+	 * @param WP_Post $post Post.
+	 * @return string
+	 */
+	public static function public_url( WP_Post $post ) {
+		return 'publish' === $post->post_status ? (string) get_permalink( $post ) : '';
+	}
+
+	/**
 	 * Lists syncable posts for the /posts route and the Sync tab.
 	 *
 	 * @param string $post_type Post type.
@@ -242,6 +254,7 @@ class WPPS_Exporter {
 				'status'       => $post->post_status,
 				'modified_gmt' => $post->post_modified_gmt,
 				'hash'         => $this->content_hash( $post ),
+				'url'          => self::public_url( $post ),
 			);
 		}
 

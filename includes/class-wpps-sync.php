@@ -203,7 +203,7 @@ class WPPS_Sync {
 
 		$items = array();
 		foreach ( $local['items'] as $item ) {
-			$items[] = $this->status_row( $item, $peer_map, (string) $peer['peer_id'] );
+			$items[] = $this->status_row( $item, $peer_map, $peer );
 		}
 
 		$local_globals = $this->globals->hash();
@@ -219,14 +219,21 @@ class WPPS_Sync {
 	}
 
 	/**
-	 * Builds one status row.
+	 * Builds one status row, with the local links for the Sync tab: the
+	 * page itself (permalink when published, else the preview link) and its
+	 * editor. Built here, never guessed in JS.
 	 *
-	 * @param array  $item     Local list item.
-	 * @param array  $peer_map Peer /status items by path.
-	 * @param string $peer_id  Peer id.
+	 * @param array $item     Local list item.
+	 * @param array $peer_map Peer /status items by path.
+	 * @param array $peer     Peer record.
 	 * @return array
 	 */
-	private function status_row( array $item, array $peer_map, $peer_id ) {
+	private function status_row( array $item, array $peer_map, array $peer ) {
+		$post = get_post( (int) $item['id'] );
+
+		$item['view_url'] = ( '' !== $item['url'] || ! $post ) ? $item['url'] : (string) get_preview_post_link( $post );
+		$item['edit_url'] = (string) get_edit_post_link( (int) $item['id'], 'raw' );
+
 		if ( '' === $item['path'] ) {
 			$item['sync_status'] = 'no_slug';
 			$item['peer']        = null;
@@ -237,13 +244,31 @@ class WPPS_Sync {
 		$exists    = ! empty( $peer_item['exists'] );
 		$peer_hash = isset( $peer_item['hash'] ) ? (string) $peer_item['hash'] : '';
 
-		$item['sync_status'] = self::compute_status( $exists, $item['hash'], $peer_hash, self::read_state( $item['id'], $peer_id ) );
+		$item['sync_status'] = self::compute_status( $exists, $item['hash'], $peer_hash, self::read_state( $item['id'], (string) $peer['peer_id'] ) );
 		$item['peer']        = $exists ? array(
 			'id'           => isset( $peer_item['id'] ) ? (int) $peer_item['id'] : 0,
 			'modified_gmt' => isset( $peer_item['modified_gmt'] ) ? (string) $peer_item['modified_gmt'] : '',
+			'url'          => self::clean_peer_url( isset( $peer_item['url'] ) ? $peer_item['url'] : '', $peer ),
 		) : null;
 
 		return $item;
+	}
+
+	/**
+	 * A peer-supplied page URL, or "" unless it is http(s) on the peer's own
+	 * host (www-insensitive). The value is peer-controlled: it must never
+	 * become a link to anywhere else, or a javascript: URL.
+	 *
+	 * @param mixed $url  URL from a peer response.
+	 * @param array $peer Peer record.
+	 * @return string
+	 */
+	private static function clean_peer_url( $url, array $peer ) {
+		$url = is_string( $url ) ? esc_url_raw( $url, array( 'http', 'https' ) ) : '';
+		if ( '' === $url || WPPS_Rewriter::bare_host( $url ) !== WPPS_Rewriter::bare_host( (string) $peer['url'] ) ) {
+			return '';
+		}
+		return $url;
 	}
 
 	/**
@@ -311,6 +336,7 @@ class WPPS_Sync {
 				$path                 = isset( $item['path'] ) ? (string) $item['path'] : '';
 				$local                = ( '' !== $path ) ? $this->exporter->find_post( $post_type, $path ) : null;
 				$item['local_exists'] = null !== $local;
+				$item['url']          = self::clean_peer_url( isset( $item['url'] ) ? $item['url'] : '', $peer );
 				$items[]              = $item;
 			}
 			$total     = isset( $response['total'] ) ? (int) $response['total'] : 0;

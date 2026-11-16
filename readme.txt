@@ -128,6 +128,7 @@ Updates are delivered via GitHub, not wordpress.org.
 == Changelog ==
 
 = 1.6.0 =
+* New: in the Sync tab, the title of each post links to the page on this site (its preview while it is not published), and "Edit" and "View on peer" links below it open the editor here and the published page on the connected site, each in a new tab. "View on peer" also appears in the list of posts that exist only on the peer. It needs the connected site to run 1.6.0 and appears only for posts published there.
 * New: a bulk push asks in the plugin's own dialog instead of a browser prompt. It says how many posts will be pushed (parents first) and lists the selected posts whose copy on the peer differs, with their status. One option overwrites all of these at once; the copy on the peer is saved as a post revision first, as with a single forced push. Without the option they are skipped and listed as before. Only the posts listed in the dialog can be overwritten: a post that became a conflict after the list was loaded is still skipped.
 
 = 1.5.0 =

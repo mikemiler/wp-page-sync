@@ -26,6 +26,8 @@
 		noPosts: 'No posts found.',
 		filterEmpty: 'No posts match the current filter.',
 		sortAsc: 'Sort ascending.',
+		edit: 'Edit',
+		viewOnPeer: 'View on peer',
 		sortDesc: 'Sort descending.',
 		filterCount: 'Showing %1$s of %2$s posts.',
 		push: 'Push',
@@ -507,6 +509,69 @@
 		}
 	} );
 
+	// URL from this site's own server: only http(s), never another scheme.
+	function httpUrl( url ) {
+		return /^https?:\/\//i.test( url || '' ) ? url : '';
+	}
+
+	// Host of the selected peer, rendered on its <option> (no secrets).
+	function currentPeerHost() {
+		return ( $( '#wpps-peer-select option:selected' ).attr( 'data-host' ) || '' ).toLowerCase();
+	}
+
+	/*
+	 * A peer-supplied page URL, or '' unless it is http(s) on the selected
+	 * peer's own host (www-insensitive). The server already filters it; this
+	 * is the second fence, because the value comes from the other site.
+	 */
+	function safePeerUrl( url ) {
+		var host = currentPeerHost();
+		var parsed;
+
+		if ( ! url || ! host || ! window.URL ) {
+			return '';
+		}
+		try {
+			parsed = new window.URL( url );
+		} catch ( e ) {
+			return '';
+		}
+		if ( 'http:' !== parsed.protocol && 'https:' !== parsed.protocol ) {
+			return '';
+		}
+		return parsed.hostname.toLowerCase().replace( /^www\./, '' ) === host ? parsed.href : '';
+	}
+
+	function newTabLink( url, text ) {
+		return $( '<a>' ).attr( { href: url, target: '_blank', rel: 'noopener noreferrer' } ).text( text );
+	}
+
+	/*
+	 * Title cell in WP list-table form (core .row-title / .row-actions):
+	 * the title links to the page, the row actions sit below it. All links
+	 * open a new tab, so the loaded table stays as it is.
+	 */
+	function titleCell( title, viewUrl, actions ) {
+		var $actions = $( '<div>' ).addClass( 'row-actions' );
+		var $cell = $( '<td>' ).append( $( '<strong>' ).append(
+			viewUrl ? newTabLink( viewUrl, title ).addClass( 'row-title' ) : $( '<span>' ).text( title )
+		) );
+
+		$.each( actions, function( index, action ) {
+			var $span = $( '<span>' ).addClass( action.cls ).append(
+				newTabLink( action.url, action.label ).attr( 'aria-label', action.label + ': ' + title )
+			);
+			if ( index < actions.length - 1 ) {
+				$span.append( ' | ' );
+			}
+			$actions.append( $span );
+		} );
+		if ( actions.length ) {
+			$cell.append( $actions );
+		}
+		return $cell;
+	}
+
 	function renderStatusRow( item ) {
 		// data-title mirrors the rendered title cell so the search matches what
 		// the user actually sees, including the "(draft)" placeholder.
@@ -519,11 +584,21 @@
 			.attr( 'data-title', title )
 			.attr( 'data-modified', item.modified_gmt || '' );
 		var unsyncable = 'no_slug' === item.sync_status;
+		var peerUrl = item.peer ? safePeerUrl( item.peer.url ) : '';
+		var actions = [];
+
+		if ( httpUrl( item.edit_url ) ) {
+			actions.push( { cls: 'edit', url: item.edit_url, label: cfg.i18n.edit } );
+		}
+		if ( peerUrl ) {
+			actions.push( { cls: 'view', url: peerUrl, label: cfg.i18n.viewOnPeer } );
+		}
 
 		$tr.append( $( '<td>' ).addClass( 'check-column' ).append(
 			$( '<input>' ).attr( 'type', 'checkbox' ).addClass( 'wpps-row-check' ).prop( 'disabled', unsyncable )
 		) );
-		$tr.append( $( '<td>' ).text( title ) );
+		// A post without slug keeps a plain title (it has no stable address).
+		$tr.append( titleCell( title, unsyncable ? '' : httpUrl( item.view_url ), actions ) );
 		$tr.append( $( '<td>' ).append( $( '<code>' ).text( item.path || '—' ) ) );
 		$tr.append( $( '<td>' ).text( item.modified_gmt || '' ) );
 		$tr.append( $( '<td>' ).append( badge( item.sync_status ) ) );
@@ -1158,7 +1233,8 @@
 			}
 			$.each( peerOnly, function( _, item ) {
 				var $tr = $( '<tr>' ).attr( 'data-path', item.path ).attr( 'data-post-type', item.post_type );
-				$tr.append( $( '<td>' ).text( item.title || '' ) );
+				var peerUrl = safePeerUrl( item.url );
+				$tr.append( titleCell( item.title || '', '', peerUrl ? [ { cls: 'view', url: peerUrl, label: cfg.i18n.viewOnPeer } ] : [] ) );
 				$tr.append( $( '<td>' ).append( $( '<code>' ).text( item.path ) ) );
 				$tr.append( $( '<td>' ).text( item.status || '' ) );
 				$tr.append( $( '<td>' ).append(
