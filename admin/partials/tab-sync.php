@@ -55,15 +55,36 @@ defined( 'ABSPATH' ) || exit;
 		<span id="wpps-bulk-feedback" class="wpps-feedback"></span>
 	</div>
 	<div id="wpps-bulk-results"></div>
+	<?php
+	/*
+	 * Sortable headers in WP core list-table markup (WP_List_Table::print_column_headers),
+	 * so core's list-tables CSS styles them. Rows are sorted client-side
+	 * (wpps-admin.js), which also sets the sorted/asc/desc classes and aria-sort.
+	 */
+	$sort_columns = array(
+		'title'    => __( 'Title', 'wp-page-sync' ),
+		'path'     => __( 'Path', 'wp-page-sync' ),
+		'modified' => __( 'Modified (GMT)', 'wp-page-sync' ),
+		'status'   => __( 'Status', 'wp-page-sync' ),
+	);
+	?>
 	<table class="widefat striped wpps-posts-table">
 		<thead>
 			<tr>
 				<td class="check-column"><input type="checkbox" id="wpps-check-all"></td>
-				<th><?php esc_html_e( 'Title', 'wp-page-sync' ); ?></th>
-				<th><?php esc_html_e( 'Path', 'wp-page-sync' ); ?></th>
-				<th><?php esc_html_e( 'Modified (GMT)', 'wp-page-sync' ); ?></th>
-				<th><?php esc_html_e( 'Status', 'wp-page-sync' ); ?></th>
-				<th><?php esc_html_e( 'Actions', 'wp-page-sync' ); ?></th>
+				<?php foreach ( $sort_columns as $sort_key => $sort_label ) : ?>
+					<th scope="col" class="manage-column sortable" data-wpps-sort="<?php echo esc_attr( $sort_key ); ?>">
+						<a href="#">
+							<span><?php echo esc_html( $sort_label ); ?></span>
+							<span class="sorting-indicators">
+								<span class="sorting-indicator asc" aria-hidden="true"></span>
+								<span class="sorting-indicator desc" aria-hidden="true"></span>
+							</span>
+							<span class="screen-reader-text wpps-sort-hint"></span>
+						</a>
+					</th>
+				<?php endforeach; ?>
+				<th scope="col"><?php esc_html_e( 'Actions', 'wp-page-sync' ); ?></th>
 			</tr>
 		</thead>
 		<tbody id="wpps-posts-body">

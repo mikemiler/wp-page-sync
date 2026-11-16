@@ -85,9 +85,11 @@ pushes.
 **Site behind HTTP Basic Auth** (a staging site whose web server asks for a
 username and password): create the connection key on the protected site, and enter its
 Basic Auth username and password together with the key under *Connect to a
-site* on the other one. Both sites need 1.4.0 or newer. The credentials cannot
-be edited later; disconnect and connect again to change them. Pairing two
-sites that are both behind HTTP Basic Auth is not supported.
+site* on the other one. Both sites need 1.4.0 or newer. To add, change or
+remove the credentials later, edit the connection's Basic Auth under
+*Connected sites* (1.5.0 or newer); saving pings the site right away. If both
+sites are protected, add the other site's credentials afterwards the same way
+on the site where the key was created.
 
 ## How updates work
 
@@ -132,10 +134,11 @@ Release steps are documented in [RELEASING.md](RELEASING.md).
 - Plain HTTP peers are rejected outside of those local hosts.
 - Optional HTTP Basic Auth credentials of a peer's web server are stored in
   that peer's record (same protection as its secret), sent only to that peer
-  as an `Authorization` header and never shown in the admin. On the receiving
-  site, requests that carry the plugin's signature and target its namespace
-  are exempt from WordPress's application password check, which would
-  otherwise mistake the web server's login for an application password.
+  as an `Authorization` header and never shown in the admin (only the
+  username is). On the receiving site, requests that carry the plugin's
+  signature and target its namespace are exempt from WordPress's application
+  password check, which would otherwise mistake the web server's login for an
+  application password.
 
 ## License
 

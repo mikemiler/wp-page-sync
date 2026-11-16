@@ -74,6 +74,7 @@ class WPPS_Admin {
 		add_action( 'wp_ajax_wpps_disconnect', array( $this, 'ajax_disconnect' ) );
 		add_action( 'wp_ajax_wpps_toggle_incoming', array( $this, 'ajax_toggle_incoming' ) );
 		add_action( 'wp_ajax_wpps_ping', array( $this, 'ajax_ping' ) );
+		add_action( 'wp_ajax_wpps_update_basic_auth', array( $this, 'ajax_update_basic_auth' ) );
 		add_action( 'wp_ajax_wpps_status_list', array( $this, 'ajax_status_list' ) );
 		add_action( 'wp_ajax_wpps_peer_posts', array( $this, 'ajax_peer_posts' ) );
 		add_action( 'wp_ajax_wpps_sync_preview', array( $this, 'ajax_sync_preview' ) );
@@ -165,6 +166,8 @@ class WPPS_Admin {
 					'noPeer'            => __( 'Connect a site first (Connections tab).', 'wp-page-sync' ),
 					'noPosts'           => __( 'No posts found.', 'wp-page-sync' ),
 					'filterEmpty'       => __( 'No posts match the current filter.', 'wp-page-sync' ),
+					'sortAsc'           => __( 'Sort ascending.', 'wp-page-sync' ),
+					'sortDesc'          => __( 'Sort descending.', 'wp-page-sync' ),
 					/* translators: 1: number of posts matching the filter, 2: total number of listed posts. */
 					'filterCount'       => __( 'Showing %1$s of %2$s posts.', 'wp-page-sync' ),
 					'push'              => __( 'Push', 'wp-page-sync' ),
@@ -466,6 +469,96 @@ class WPPS_Admin {
 	}
 
 	/**
+	 * AJAX: set, replace or remove the HTTP Basic Auth credentials of an
+	 * existing connection (same rules as the connect form: both fields =
+	 * set, both empty = remove). The response carries the new state label
+	 * and the log the username only, never the password. Removing when
+	 * nothing is stored answers success=false, so the JS skips its ping.
+	 *
+	 * @return void
+	 */
+	public function ajax_update_basic_auth() {
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		$this->require_admin();
+
+		$peer_id = isset( $_POST['peer_id'] ) ? sanitize_text_field( wp_unslash( $_POST['peer_id'] ) ) : '';
+		$peer    = $this->get_valid_peer( $peer_id );
+		$auth    = $this->posted_basic_auth();
+
+		$error = self::basic_auth_change_error( $peer, $auth );
+		if ( null !== $error ) {
+			wp_send_json_error( array( 'message' => $error ) );
+		}
+
+		// Replace the whole record: removing credentials must drop both keys, which update_peer() cannot.
+		unset( $peer['basic_auth_user'], $peer['basic_auth_pass'] );
+		$peer = array_merge( $peer, $auth );
+		$this->peers->add_peer( $peer );
+
+		if ( $auth ) {
+			/* translators: 1: peer name, 2: Basic Auth username. */
+			$log_message = sprintf( __( 'Basic Auth for %1$s set (username %2$s).', 'wp-page-sync' ), $peer['name'], $auth['basic_auth_user'] );
+			$message     = __( 'Basic Auth saved.', 'wp-page-sync' );
+		} else {
+			/* translators: %s: peer name. */
+			$log_message = sprintf( __( 'Basic Auth for %s removed.', 'wp-page-sync' ), $peer['name'] );
+			$message     = __( 'Basic Auth removed.', 'wp-page-sync' );
+		}
+		WPPS_Log::add( 'basic_auth', $log_message );
+
+		wp_send_json_success(
+			array(
+				'message' => $message,
+				'label'   => self::basic_auth_label( $peer ),
+			)
+		);
+	}
+
+	/**
+	 * Why a Basic Auth change must not be stored, or null when it may.
+	 *
+	 * Removing needs stored credentials. Setting needs the peer's rest_url on
+	 * the host of its listed url: requests (and the credentials) go to
+	 * rest_url, while the Connections table only shows url, so the admin
+	 * could otherwise hand the credentials to a host they do not see.
+	 *
+	 * @param array $peer Stored peer record.
+	 * @param array $auth Posted credentials, empty for "remove".
+	 * @return string|null Error message.
+	 */
+	private static function basic_auth_change_error( array $peer, array $auth ) {
+		if ( ! $auth ) {
+			return WPPS_Client::has_basic_auth( $peer ) ? null : __( 'No Basic Auth stored.', 'wp-page-sync' );
+		}
+
+		$rest_host = strtolower( (string) wp_parse_url( (string) $peer['rest_url'], PHP_URL_HOST ) );
+		$url_host  = strtolower( (string) wp_parse_url( (string) $peer['url'], PHP_URL_HOST ) );
+		if ( $rest_host !== $url_host ) {
+			return sprintf(
+				/* translators: 1: host the connection sends its requests to, 2: host of the listed site URL. */
+				__( 'This connection sends its requests to %1$s, not to the listed site %2$s. Disconnect and connect again before setting Basic Auth.', 'wp-page-sync' ),
+				$rest_host,
+				$url_host
+			);
+		}
+		return null;
+	}
+
+	/**
+	 * Basic Auth state of a peer for the Connections table (never the password).
+	 *
+	 * @param array $peer Peer record.
+	 * @return string Unescaped label.
+	 */
+	public static function basic_auth_label( array $peer ) {
+		if ( ! WPPS_Client::has_basic_auth( $peer ) ) {
+			return __( 'Basic Auth: off', 'wp-page-sync' );
+		}
+		/* translators: %s: Basic Auth username. */
+		return sprintf( __( 'Basic Auth: on (%s)', 'wp-page-sync' ), (string) $peer['basic_auth_user'] );
+	}
+
+	/**
 	 * AJAX: ping a peer via GET /info and refresh its record.
 	 *
 	 * @return void
@@ -716,7 +809,8 @@ class WPPS_Admin {
 
 	/**
 	 * Optional HTTP Basic Auth credentials of the peer's web server from the
-	 * connect form ($_POST['basic_auth_user'], $_POST['basic_auth_pass']).
+	 * connect form or the per-connection Basic Auth form
+	 * ($_POST['basic_auth_user'], $_POST['basic_auth_pass']).
 	 *
 	 * Both empty means none. The password is kept byte-exact (only
 	 * unslashed): it is never output, only base64-encoded into the
@@ -725,7 +819,7 @@ class WPPS_Admin {
 	 * @return array {basic_auth_user, basic_auth_pass}, or an empty array.
 	 */
 	private function posted_basic_auth() {
-		// phpcs:disable WordPress.Security.NonceVerification.Missing -- check_ajax_referer runs in the calling handler.
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- check_ajax_referer runs in every calling handler.
 		// Non-string input (basic_auth_user[]=x) counts as absent.
 		$user = isset( $_POST['basic_auth_user'] ) && is_string( $_POST['basic_auth_user'] ) ? sanitize_text_field( wp_unslash( $_POST['basic_auth_user'] ) ) : '';
 		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- password must stay byte-exact; never output or stored anywhere but the peer record.

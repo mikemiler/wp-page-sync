@@ -50,7 +50,7 @@ defined( 'ABSPATH' ) || exit;
 		<label for="wpps-connect-auth-pass"><?php esc_html_e( 'Basic Auth password', 'wp-page-sync' ); ?></label><br>
 		<input type="password" id="wpps-connect-auth-pass" class="regular-text" autocomplete="new-password">
 	</p>
-	<p class="description"><?php esc_html_e( 'Only needed if the other site is protected by HTTP Basic Auth (browser password prompt). In that case, create the connection key on the protected site and connect here. To change the credentials later, disconnect and connect again.', 'wp-page-sync' ); ?></p>
+	<p class="description"><?php esc_html_e( 'Only needed if the other site is protected by HTTP Basic Auth (browser password prompt). In that case, create the connection key on the protected site and connect here. To change the credentials later, edit the connection\'s Basic Auth under Connected sites.', 'wp-page-sync' ); ?></p>
 	<p>
 		<button type="button" class="button button-primary" id="wpps-connect"><?php esc_html_e( 'Connect', 'wp-page-sync' ); ?></button>
 		<span id="wpps-connect-feedback" class="wpps-feedback"></span>
@@ -70,6 +70,7 @@ defined( 'ABSPATH' ) || exit;
 				<th><?php esc_html_e( 'Key', 'wp-page-sync' ); ?></th>
 				<th><?php esc_html_e( 'Last seen', 'wp-page-sync' ); ?></th>
 				<th><?php esc_html_e( 'Allow incoming', 'wp-page-sync' ); ?></th>
+				<th><?php esc_html_e( 'Basic Auth', 'wp-page-sync' ); ?></th>
 				<th><?php esc_html_e( 'Actions', 'wp-page-sync' ); ?></th>
 			</tr>
 		</thead>
@@ -82,6 +83,7 @@ defined( 'ABSPATH' ) || exit;
 					/* translators: %s: human-readable time difference. */
 					$last_seen = sprintf( __( '%s ago', 'wp-page-sync' ), human_time_diff( (int) $peer['last_seen'] ) );
 				}
+				$auth_id = 'wpps-auth-' . $peer['peer_id'];
 				?>
 				<tr data-peer-id="<?php echo esc_attr( $peer['peer_id'] ); ?>">
 					<td><?php echo esc_html( $peer['name'] ); ?></td>
@@ -95,7 +97,26 @@ defined( 'ABSPATH' ) || exit;
 						</label>
 					</td>
 					<td>
+						<span class="wpps-basic-auth-state"><?php echo esc_html( WPPS_Admin::basic_auth_label( $peer ) ); ?></span>
+						<div class="wpps-basic-auth-form wpps-hidden">
+							<p>
+								<label for="<?php echo esc_attr( $auth_id . '-user' ); ?>"><?php esc_html_e( 'Basic Auth username', 'wp-page-sync' ); ?></label><br>
+								<input type="text" id="<?php echo esc_attr( $auth_id . '-user' ); ?>" class="regular-text wpps-auth-user" autocomplete="off">
+							</p>
+							<p>
+								<label for="<?php echo esc_attr( $auth_id . '-pass' ); ?>"><?php esc_html_e( 'Basic Auth password', 'wp-page-sync' ); ?></label><br>
+								<input type="password" id="<?php echo esc_attr( $auth_id . '-pass' ); ?>" class="regular-text wpps-auth-pass" autocomplete="new-password">
+							</p>
+							<p class="description"><?php esc_html_e( 'Both filled: set or replace the credentials. Both empty: remove them.', 'wp-page-sync' ); ?></p>
+							<p>
+								<button type="button" class="button button-primary wpps-auth-save"><?php esc_html_e( 'Save', 'wp-page-sync' ); ?></button>
+								<span class="wpps-feedback wpps-auth-feedback"></span>
+							</p>
+						</div>
+					</td>
+					<td>
 						<button type="button" class="button wpps-ping"><?php esc_html_e( 'Ping', 'wp-page-sync' ); ?></button>
+						<button type="button" class="button wpps-basic-auth-toggle" aria-expanded="false"><?php esc_html_e( 'Basic Auth', 'wp-page-sync' ); ?></button>
 						<button type="button" class="button wpps-disconnect"><?php esc_html_e( 'Disconnect', 'wp-page-sync' ); ?></button>
 						<span class="wpps-feedback wpps-row-feedback"></span>
 					</td>
