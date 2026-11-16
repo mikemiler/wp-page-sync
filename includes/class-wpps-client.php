@@ -308,7 +308,7 @@ class WPPS_Client {
 	 */
 	private static function http_error_message( $code ) {
 		if ( 401 === $code ) {
-			return __( 'The other site asks for a login (HTTP 401): its web server is protected by HTTP Basic Auth, or the Basic Auth username and password are wrong. Create the connection key on the protected site and enter its Basic Auth username and password when connecting from the other site; to change them later, disconnect and connect again.', 'wp-page-sync' );
+			return __( 'The other site asks for a login (HTTP 401): its web server is protected by HTTP Basic Auth, or the Basic Auth username and password are wrong. For a new connection, create the connection key on the protected site and enter its Basic Auth username and password when connecting from the other site; for an existing one, edit the connection\'s Basic Auth under Connected sites.', 'wp-page-sync' );
 		}
 		if ( 413 === $code ) {
 			return sprintf(

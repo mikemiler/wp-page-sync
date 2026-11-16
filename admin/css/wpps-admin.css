@@ -43,6 +43,10 @@
 	display: inline-block;
 }
 
+.wpps-basic-auth-form {
+	margin-top: 8px;
+}
+
 /* Sync tab */
 
 .wpps-toolbar {

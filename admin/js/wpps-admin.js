@@ -233,6 +233,45 @@
 		} );
 	} );
 
+	// Show or hide a row's Basic Auth form.
+	$( document ).on( 'click', '.wpps-basic-auth-toggle', function() {
+		var $form = $( this ).closest( 'tr' ).find( '.wpps-basic-auth-form' );
+
+		$form.toggleClass( 'wpps-hidden' );
+		$( this ).attr( 'aria-expanded', $form.hasClass( 'wpps-hidden' ) ? 'false' : 'true' );
+	} );
+
+	// Save (both fields) or remove (both empty) a row's Basic Auth, then ping.
+	$( document ).on( 'click', '.wpps-auth-save', function() {
+		var $button = $( this );
+		var $row = $button.closest( 'tr' );
+		var $fb = $row.find( '.wpps-auth-feedback' );
+		var $user = $row.find( '.wpps-auth-user' );
+		var $pass = $row.find( '.wpps-auth-pass' );
+
+		$button.prop( 'disabled', true );
+		feedback( $fb, cfg.i18n.working, true );
+
+		post( 'wpps_update_basic_auth', {
+			peer_id: rowPeerId( this ),
+			basic_auth_user: $.trim( $user.val() || '' ),
+			// Byte-exact, as in the connect form.
+			basic_auth_pass: $pass.val() || ''
+		} ).done( function( response ) {
+			feedback( $fb, responseMessage( response ), !! response.success );
+			if ( response.success ) {
+				$user.val( '' );
+				$pass.val( '' );
+				$row.find( '.wpps-basic-auth-state' ).text( response.data.label || '' );
+				$row.find( '.wpps-ping' ).trigger( 'click' );
+			}
+		} ).fail( function( xhr ) {
+			feedback( $fb, failMessage( xhr ), false );
+		} ).always( function() {
+			$button.prop( 'disabled', false );
+		} );
+	} );
+
 	// Disconnect a peer.
 	$( document ).on( 'click', '.wpps-disconnect', function() {
 		var $button = $( this );

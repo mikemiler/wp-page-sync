@@ -4,7 +4,7 @@ Tags: sync, migration, staging, media, generateblocks
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.4.0
+Stable tag: 1.5.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -114,16 +114,22 @@ Updates are delivered via GitHub, not wordpress.org.
    sites), create the connection key on that protected site and connect from the other
    one: enter the Basic Auth username and password together with the key under
    **Connect to a site**. They are stored with that connection and sent with
-   every request to the protected site, never in a request body. They cannot
-   be edited later; to change them, disconnect and connect again. The
-   protected site must run 1.4.0 or later as well. Pairing two sites that are
-   both behind HTTP Basic Auth is not supported.
+   every request to the protected site, never in a request body. To add,
+   change or remove them later, edit the connection's Basic Auth under
+   Connected sites (button **Basic Auth** in its row); saving pings the site
+   right away. The protected site must run 1.4.0 or later as well. If both
+   sites are protected, add the other site's credentials afterwards the same
+   way on the site where the key was created.
 6. Syncing SVG uploads additionally requires the safe-svg plugin on the
    receiving site, because its bundled sanitizer is mandatory before an SVG is
    written. Without it, SVG imports are rejected; all other file types are
    unaffected.
 
 == Changelog ==
+
+= 1.5.0 =
+* New: edit the HTTP Basic Auth of an existing connection. Each row under Connected sites shows whether Basic Auth is on (with its username) and has a "Basic Auth" button: fill in both fields to set or replace the credentials, leave both empty to remove them. Saving pings the site right away, so a wrong password shows at once. The password is never shown again. Disconnecting and connecting again is no longer needed, for example when a site gets password protection after it was paired.
+* Improvement: two sites that are both behind HTTP Basic Auth can now be paired: connect with the protected site's credentials as before, then add the other site's credentials under Connected sites on the site where the key was created.
 
 = 1.4.0 =
 * New: connect to a site protected by HTTP Basic Auth on its web server, such as a password-protected staging site. The "Connect to a site" form takes an optional Basic Auth username and password, which are stored with the connection and sent with every request to that site. Create the connection key on the protected site and connect from the other one. To change the credentials, disconnect and connect again. Pairing two sites that are both behind HTTP Basic Auth is not supported.
