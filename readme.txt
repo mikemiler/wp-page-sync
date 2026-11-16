@@ -4,7 +4,7 @@ Tags: sync, migration, staging, media, generateblocks
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.3.0
+Stable tag: 1.4.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -109,12 +109,26 @@ Updates are delivered via GitHub, not wordpress.org.
    pushes. It controls whether a peer may write to that site and defaults to on
    only for local hosts (`*.test`, `*.local`, `localhost`, `127.0.0.1`); on dev
    and production sites, turn it on deliberately per peer.
-5. Syncing SVG uploads additionally requires the safe-svg plugin on the
+5. If one site is protected by HTTP Basic Auth on its web server (the browser
+   asks for a username and password before showing the site, common on staging
+   sites), create the connection key on that protected site and connect from the other
+   one: enter the Basic Auth username and password together with the key under
+   **Connect to a site**. They are stored with that connection and sent with
+   every request to the protected site, never in a request body. They cannot
+   be edited later; to change them, disconnect and connect again. The
+   protected site must run 1.4.0 or later as well. Pairing two sites that are
+   both behind HTTP Basic Auth is not supported.
+6. Syncing SVG uploads additionally requires the safe-svg plugin on the
    receiving site, because its bundled sanitizer is mandatory before an SVG is
    written. Without it, SVG imports are rejected; all other file types are
    unaffected.
 
 == Changelog ==
+
+= 1.4.0 =
+* New: connect to a site protected by HTTP Basic Auth on its web server, such as a password-protected staging site. The "Connect to a site" form takes an optional Basic Auth username and password, which are stored with the connection and sent with every request to that site. Create the connection key on the protected site and connect from the other one. To change the credentials, disconnect and connect again. Pairing two sites that are both behind HTTP Basic Auth is not supported.
+* Improvement: a login prompt from the other site's web server (HTTP 401 without a message from the plugin) now says that the site is protected by HTTP Basic Auth instead of only "Peer responded with HTTP 401".
+* Note: update the protected site to 1.4.0 as well. If it has an application password, WordPress would otherwise take the web server's login for an application password and reject every sync request with "Unauthorized". 1.4.0 exempts the plugin's own signed requests from that check; they never used application passwords.
 
 = 1.3.0 =
 * Fix: an image used at a size such as "large" now arrives as well when WordPress stores it as a "-scaled" copy (photos wider or taller than 2560 pixels). Before, the size URL kept pointing at the sending site. Every size of an image, its untouched original and size files no longer listed by WordPress now point at the receiving site's copy, and the image is transferred and created once even when the post uses it in several sizes and as featured image.

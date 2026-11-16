@@ -381,16 +381,20 @@ class WPPS_Admin {
 			wp_send_json_error( array( 'message' => __( 'A connection with this key already exists.', 'wp-page-sync' ) ) );
 		}
 
-		$peer = array(
-			'peer_id'        => $data['key_id'],
-			'name'           => (string) wp_parse_url( $data['site'], PHP_URL_HOST ),
-			'url'            => $data['site'],
-			'rest_url'       => $data['rest'],
-			'uploads_url'    => '',
-			'secret'         => $data['secret'],
-			'connected_at'   => time(),
-			'allow_incoming' => WPPS_Peers::default_allow_incoming(),
-			'last_seen'      => 0,
+		// Stored with the peer before the handshake, which already needs them.
+		$peer = array_merge(
+			array(
+				'peer_id'        => $data['key_id'],
+				'name'           => (string) wp_parse_url( $data['site'], PHP_URL_HOST ),
+				'url'            => $data['site'],
+				'rest_url'       => $data['rest'],
+				'uploads_url'    => '',
+				'secret'         => $data['secret'],
+				'connected_at'   => time(),
+				'allow_incoming' => WPPS_Peers::default_allow_incoming(),
+				'last_seen'      => 0,
+			),
+			$this->posted_basic_auth()
 		);
 		$this->peers->add_peer( $peer );
 
@@ -711,6 +715,40 @@ class WPPS_Admin {
 	}
 
 	/**
+	 * Optional HTTP Basic Auth credentials of the peer's web server from the
+	 * connect form ($_POST['basic_auth_user'], $_POST['basic_auth_pass']).
+	 *
+	 * Both empty means none. The password is kept byte-exact (only
+	 * unslashed): it is never output, only base64-encoded into the
+	 * Authorization header. RFC 7617 forbids a colon in the username.
+	 *
+	 * @return array {basic_auth_user, basic_auth_pass}, or an empty array.
+	 */
+	private function posted_basic_auth() {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- check_ajax_referer runs in the calling handler.
+		// Non-string input (basic_auth_user[]=x) counts as absent.
+		$user = isset( $_POST['basic_auth_user'] ) && is_string( $_POST['basic_auth_user'] ) ? sanitize_text_field( wp_unslash( $_POST['basic_auth_user'] ) ) : '';
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- password must stay byte-exact; never output or stored anywhere but the peer record.
+		$pass = isset( $_POST['basic_auth_pass'] ) && is_string( $_POST['basic_auth_pass'] ) ? wp_unslash( $_POST['basic_auth_pass'] ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+
+		if ( '' === $user && '' === $pass ) {
+			return array();
+		}
+		if ( '' === $user || '' === $pass ) {
+			wp_send_json_error( array( 'message' => __( 'Enter both the Basic Auth username and password, or leave both empty.', 'wp-page-sync' ) ) );
+		}
+		if ( false !== strpos( $user, ':' ) ) {
+			wp_send_json_error( array( 'message' => __( 'The Basic Auth username must not contain a colon.', 'wp-page-sync' ) ) );
+		}
+
+		return array(
+			'basic_auth_user' => $user,
+			'basic_auth_pass' => $pass,
+		);
+	}
+
+	/**
 	 * Validated post type from $_POST['post_type'].
 	 *
 	 * @return string
@@ -796,6 +834,8 @@ class WPPS_Admin {
 	 *
 	 * The peer's uploads_url is unknown at pairing time on the key-creating
 	 * side (plan §4.1) and gets refreshed here on every successful ping.
+	 * For a peer with Basic Auth credentials, a new rest_url must keep the
+	 * stored host, so the credentials can never be redirected to another one.
 	 *
 	 * @param string $peer_id  Peer id.
 	 * @param array  $response Handshake or /info response body.
@@ -814,11 +854,28 @@ class WPPS_Admin {
 			$rest_url = esc_url_raw( $response['rest_url'] );
 			$scheme   = (string) wp_parse_url( $rest_url, PHP_URL_SCHEME );
 			$host     = (string) wp_parse_url( $rest_url, PHP_URL_HOST );
-			if ( 'https' === $scheme || WPPS_Client::is_local_host( $host ) ) {
+			if ( ( 'https' === $scheme || WPPS_Client::is_local_host( $host ) ) && $this->rest_host_allowed( $peer_id, $host ) ) {
 				$fields['rest_url'] = $rest_url;
 			}
 		}
 
 		$this->peers->update_peer( $peer_id, $fields );
+	}
+
+	/**
+	 * Whether a peer's rest_url may move to a host: always without Basic Auth
+	 * credentials; with them only when the host stays the stored one.
+	 *
+	 * @param string $peer_id Peer id.
+	 * @param string $host    Host of the new rest_url.
+	 * @return bool
+	 */
+	private function rest_host_allowed( $peer_id, $host ) {
+		$peer = $this->peers->get_peer( $peer_id );
+		if ( ! $peer || ! WPPS_Client::has_basic_auth( $peer ) ) {
+			return true;
+		}
+		$stored = (string) wp_parse_url( (string) $peer['rest_url'], PHP_URL_HOST );
+		return '' !== $host && strtolower( $stored ) === strtolower( $host );
 	}
 }

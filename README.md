@@ -82,6 +82,13 @@ in both directions, including the upload files they reference.
 Then enable **Allow incoming** on whichever site should be allowed to receive
 pushes.
 
+**Site behind HTTP Basic Auth** (a staging site whose web server asks for a
+username and password): create the connection key on the protected site, and enter its
+Basic Auth username and password together with the key under *Connect to a
+site* on the other one. Both sites need 1.4.0 or newer. The credentials cannot
+be edited later; disconnect and connect again to change them. Pairing two
+sites that are both behind HTTP Basic Auth is not supported.
+
 ## How updates work
 
 The plugin is not on wordpress.org. It ships the
@@ -123,6 +130,12 @@ Release steps are documented in [RELEASING.md](RELEASING.md).
   on only for local hosts (`*.test`, `*.local`, `localhost`, `127.0.0.1`) and
   must be enabled deliberately everywhere else.
 - Plain HTTP peers are rejected outside of those local hosts.
+- Optional HTTP Basic Auth credentials of a peer's web server are stored in
+  that peer's record (same protection as its secret), sent only to that peer
+  as an `Authorization` header and never shown in the admin. On the receiving
+  site, requests that carry the plugin's signature and target its namespace
+  are exempt from WordPress's application password check, which would
+  otherwise mistake the web server's login for an application password.
 
 ## License
 

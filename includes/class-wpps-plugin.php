@@ -75,6 +75,8 @@ final class WPPS_Plugin {
 		$this->rest = new WPPS_Rest( $this->peers, $exporter, $importer, $globals, $verifier );
 
 		add_action( 'rest_api_init', array( $this->rest, 'register_routes' ) );
+		// Registered at load time: core may resolve the current user before rest_api_init.
+		add_filter( 'application_password_is_api_request', array( 'WPPS_Rest', 'filter_app_password_api_request' ) );
 
 		if ( is_admin() ) {
 			$this->admin = new WPPS_Admin( $this->peers, $this->client, $sync, $verifier );

@@ -195,7 +195,12 @@
 		$button.prop( 'disabled', true );
 		feedback( $fb, cfg.i18n.connecting, true );
 
-		post( 'wpps_connect', { key: key } ).done( function( response ) {
+		post( 'wpps_connect', {
+			key: key,
+			basic_auth_user: $.trim( $( '#wpps-connect-auth-user' ).val() || '' ),
+			// Byte-exact: a password may legitimately start or end with a space.
+			basic_auth_pass: $( '#wpps-connect-auth-pass' ).val() || ''
+		} ).done( function( response ) {
 			if ( response.success ) {
 				feedback( $fb, responseMessage( response ), true );
 				window.setTimeout( function() {

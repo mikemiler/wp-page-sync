@@ -18,7 +18,8 @@ class WPPS_Client {
 	/**
 	 * Sends a signed request to a peer and decodes the JSON response.
 	 *
-	 * @param array             $peer    Peer record (needs peer_id, secret, rest_url).
+	 * @param array             $peer    Peer record (needs peer_id, secret, rest_url;
+	 *                                   optional basic_auth_user/basic_auth_pass).
 	 * @param string            $method  HTTP method.
 	 * @param string            $route   REST route incl. namespace, e.g. /wp-page-sync/v1/info.
 	 * @param array             $query   Query args as key => value (raw values).
@@ -142,6 +143,17 @@ class WPPS_Client {
 			$args['body']                    = $body_string;
 		}
 
+		/*
+		 * Optional HTTP Basic Auth of the peer's web server (a password
+		 * protected staging site). Only this peer's own credentials, only as a
+		 * header, and only after the HTTPS check above. The HMAC signature
+		 * covers X-WPPS-* headers only, so Authorization stays free.
+		 */
+		if ( self::has_basic_auth( $peer ) ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- RFC 7617 Basic Auth encoding, not obfuscation.
+			$args['headers']['Authorization'] = 'Basic ' . base64_encode( $peer['basic_auth_user'] . ':' . $peer['basic_auth_pass'] );
+		}
+
 		return array(
 			'url'  => $url,
 			'args' => $args,
@@ -205,6 +217,18 @@ class WPPS_Client {
 	 */
 	public function info( array $peer ) {
 		return $this->request( $peer, 'GET', '/' . WPPS_REST_NS . '/info' );
+	}
+
+	/**
+	 * Whether a peer record carries HTTP Basic Auth credentials (1.4.0).
+	 *
+	 * A username of "0" counts as set, so no empty() here.
+	 *
+	 * @param array $peer Peer record.
+	 * @return bool
+	 */
+	public static function has_basic_auth( array $peer ) {
+		return isset( $peer['basic_auth_user'], $peer['basic_auth_pass'] ) && '' !== (string) $peer['basic_auth_user'];
 	}
 
 	/**
@@ -273,7 +297,9 @@ class WPPS_Client {
 	/**
 	 * Message for an error answer without a JSON message of its own.
 	 *
-	 * A 413 without one comes from the web server or a proxy in front of
+	 * A 401 without one comes from the peer's web server (HTTP Basic Auth),
+	 * not from this plugin, whose 401 always carries a JSON message. A 413
+	 * without one comes from the web server or a proxy in front of
 	 * WordPress, not from this plugin: its body-size limit is below one
 	 * request.
 	 *
@@ -281,6 +307,9 @@ class WPPS_Client {
 	 * @return string
 	 */
 	private static function http_error_message( $code ) {
+		if ( 401 === $code ) {
+			return __( 'The other site asks for a login (HTTP 401): its web server is protected by HTTP Basic Auth, or the Basic Auth username and password are wrong. Create the connection key on the protected site and enter its Basic Auth username and password when connecting from the other site; to change them later, disconnect and connect again.', 'wp-page-sync' );
+		}
 		if ( 413 === $code ) {
 			return sprintf(
 				/* translators: %s: size of one upload piece, e.g. "1 MB". */

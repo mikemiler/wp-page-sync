@@ -935,6 +935,51 @@ class WPPS_Rest {
 	}
 
 	/**
+	 * Filter application_password_is_api_request: keeps WordPress from
+	 * treating the HTTP Basic Auth of a protected web server as an
+	 * application password on our own signed requests.
+	 *
+	 * Behind server-level Basic Auth, PHP_AUTH_USER/PHP_AUTH_PW hold the web
+	 * server's credentials. As soon as any application password exists on
+	 * this site, core then validates them as an application password on every
+	 * REST request, fails (unknown user or not an app password), and
+	 * rest_application_password_check_errors rejects the whole request with
+	 * 401 before our permission callback runs. Our routes never authenticate
+	 * a WordPress user (HMAC only, see the class docblock), so switching the
+	 * application password check off for requests that carry our signature
+	 * header AND target our namespace removes nothing they rely on and
+	 * cannot widen access: the signature is still verified as before, and
+	 * the current user stays 0.
+	 *
+	 * @param bool $is_api_request Whether application passwords may be used.
+	 * @return bool
+	 */
+	public static function filter_app_password_api_request( $is_api_request ) {
+		if ( ! $is_api_request || empty( $_SERVER['HTTP_X_WPPS_SIGNATURE'] ) ) {
+			return $is_api_request;
+		}
+
+		$namespace = '/' . WPPS_REST_NS . '/';
+
+		// Plain permalinks: ?rest_route=/wp-page-sync/v1/... (the route is only compared, never used).
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+		$route = isset( $_GET['rest_route'] ) && is_string( $_GET['rest_route'] ) ? wp_unslash( $_GET['rest_route'] ) : '';
+		if ( 0 === strpos( $route . '/', $namespace ) ) {
+			return false;
+		}
+
+		// Pretty permalinks: /wp-json/wp-page-sync/v1/..., also below a subdirectory install.
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- only compared, never used.
+		$uri  = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
+		$path = rawurldecode( (string) wp_parse_url( $uri, PHP_URL_PATH ) );
+		if ( false !== strpos( $path . '/', '/' . rest_get_url_prefix() . $namespace ) ) {
+			return false;
+		}
+
+		return $is_api_request;
+	}
+
+	/**
 	 * Uniform 401 for every authentication failure (plan §4.3, no info leak).
 	 *
 	 * @return WP_Error

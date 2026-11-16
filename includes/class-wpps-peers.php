@@ -12,7 +12,9 @@ defined( 'ABSPATH' ) || exit;
  *
  * Peer records (option wpps_peers, autoload no), keyed by peer_id:
  * {peer_id, name, url, rest_url, uploads_url, secret, connected_at,
- * allow_incoming, last_seen}. Pending pairing keys (option
+ * allow_incoming, last_seen}, plus optional basic_auth_user and
+ * basic_auth_pass (1.4.0: the peer web server's HTTP Basic Auth, entered on
+ * the connecting side only; never output). Pending pairing keys (option
  * wpps_pending_keys, autoload no): {key_id: {secret, created}}, expired
  * entries are lazily purged on every read.
  */
