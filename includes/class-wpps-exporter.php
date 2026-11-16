@@ -17,6 +17,13 @@ class WPPS_Exporter {
 	const SYNCABLE_STATUSES   = array( 'publish', 'draft', 'pending', 'private' );
 
 	/**
+	 * Taxonomies whose term assignments travel with a post (by slug).
+	 *
+	 * @var string[]
+	 */
+	const SYNCABLE_TAXONOMIES = array( 'category', 'post_tag' );
+
+	/**
 	 * Meta keys never exported (plan §5). _thumbnail_id → featured,
 	 * _wp_page_template → post.template; the two GenerateBlocks keys are
 	 * post-ID-bound on the source site.
@@ -111,50 +118,60 @@ class WPPS_Exporter {
 	}
 
 	/**
-	 * Content hash (plan §6.4): sha256 over title|path|status|normalized
-	 * content|normalized excerpt. pending counts as draft so hashes stay
-	 * stable across the pending→draft import rule.
+	 * Content hash of a post (plan §6.4): sha256 over title | path | status
+	 * | normalized content | normalized excerpt | featured image path |
+	 * password | comment status | ping status. pending counts as draft so
+	 * hashes stay stable across the pending→draft import rule.
+	 * Attachment IDs in media blocks are neutralized: the import remaps them
+	 * to the receiving site's own IDs, so they differ between two otherwise
+	 * identical copies. For the same reason the featured image enters as its
+	 * uploads-relative path, never as ID (site-specific) or URL (host-bound):
+	 * the import writes the file at that same relative path. The three page
+	 * settings (1.3.0) are synced fields, so a difference in them alone shows
+	 * the post as changed.
 	 *
-	 * @param string $title   Post title.
-	 * @param string $path    Hierarchical path.
-	 * @param string $status  Post status.
-	 * @param string $content Raw content.
-	 * @param string $excerpt Raw excerpt.
+	 * @param WP_Post $post Post.
 	 * @return string
 	 */
-	public function hash_fields( $title, $path, $status, $content, $excerpt ) {
+	public function content_hash( WP_Post $post ) {
 		$hosts  = $this->known_hosts();
-		$status = ( 'pending' === $status ) ? 'draft' : $status;
+		$status = ( 'pending' === $post->post_status ) ? 'draft' : $post->post_status;
 
 		return hash(
 			'sha256',
 			implode(
 				"\n",
 				array(
-					(string) $title,
-					(string) $path,
+					(string) $post->post_title,
+					(string) get_page_uri( $post ),
 					(string) $status,
-					WPPS_Rewriter::normalize( (string) $content, $hosts ),
-					WPPS_Rewriter::normalize( (string) $excerpt, $hosts ),
+					WPPS_Rewriter::normalize( WPPS_Rewriter::neutralize_attachment_ids( $post->post_content ), $hosts ),
+					WPPS_Rewriter::normalize( (string) $post->post_excerpt, $hosts ),
+					$this->featured_rel( $post->ID ),
+					(string) $post->post_password,
+					(string) $post->comment_status,
+					(string) $post->ping_status,
 				)
 			)
 		);
 	}
 
 	/**
-	 * Content hash of a post object.
+	 * Uploads-relative path of a post's featured image, for hashing.
 	 *
-	 * @param WP_Post $post Post.
-	 * @return string
+	 * The import's -wpps{6 hex} dedup suffix and core's -scaled suffix are
+	 * stripped, so a target-side renamed copy of the same image hashes equal.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string "" when the post has no featured image.
 	 */
-	public function content_hash( WP_Post $post ) {
-		return $this->hash_fields(
-			$post->post_title,
-			(string) get_page_uri( $post ),
-			$post->post_status,
-			$post->post_content,
-			$post->post_excerpt
-		);
+	private function featured_rel( $post_id ) {
+		$thumb_id = (int) get_post_thumbnail_id( $post_id );
+		if ( ! $thumb_id ) {
+			return '';
+		}
+		$rel = (string) get_post_meta( $thumb_id, '_wp_attached_file', true );
+		return (string) preg_replace( '/(?:-wpps[0-9a-f]{6}|-scaled)(\.[A-Za-z0-9]+)$/', '$1', $rel );
 	}
 
 	/**
@@ -177,6 +194,8 @@ class WPPS_Exporter {
 				'no_found_rows'  => false,
 			)
 		);
+		// One query for all featured images the content hashes read.
+		update_post_thumbnail_cache( $query );
 
 		$items = array();
 		foreach ( $query->posts as $post ) {
@@ -274,19 +293,25 @@ class WPPS_Exporter {
 
 		return array(
 			'post'           => array(
-				'post_type'    => $post->post_type,
-				'path'         => $path,
-				'slug'         => $post->post_name,
-				'title'        => $post->post_title,
-				'status'       => $status,
-				'content'      => $post->post_content,
-				'excerpt'      => $post->post_excerpt,
-				'menu_order'   => (int) $post->menu_order,
-				'parent_path'  => $parent_path,
-				'template'     => (string) get_post_meta( $post->ID, '_wp_page_template', true ),
-				'modified_gmt' => $post->post_modified_gmt,
+				'post_type'      => $post->post_type,
+				'path'           => $path,
+				'slug'           => $post->post_name,
+				'title'          => $post->post_title,
+				'status'         => $status,
+				'content'        => $post->post_content,
+				'excerpt'        => $post->post_excerpt,
+				'menu_order'     => (int) $post->menu_order,
+				'parent_path'    => $parent_path,
+				'template'       => (string) get_post_meta( $post->ID, '_wp_page_template', true ),
+				'modified_gmt'   => $post->post_modified_gmt,
+				'date'           => $post->post_date,
+				'date_gmt'       => $post->post_date_gmt,
+				'password'       => $post->post_password,
+				'comment_status' => $post->comment_status,
+				'ping_status'    => $post->ping_status,
 			),
 			'meta'           => $meta,
+			'terms'          => $this->export_terms( $post ),
 			'featured'       => $featured,
 			'media_manifest' => $manifest['manifest'],
 			'source'         => array(
@@ -300,6 +325,31 @@ class WPPS_Exporter {
 				'warnings' => array_merge( $warnings, $manifest['warnings'] ),
 			),
 		);
+	}
+
+	/**
+	 * Term assignments of a post, per syncable taxonomy of its post type.
+	 *
+	 * Every syncable taxonomy of the post type is present, an empty list
+	 * included, so the receiver can tell "no terms" from "not sent".
+	 *
+	 * @param WP_Post $post Post.
+	 * @return array<string, array[]> taxonomy => list of {slug, name}.
+	 */
+	private function export_terms( WP_Post $post ) {
+		$terms = array();
+		foreach ( array_intersect( self::SYNCABLE_TAXONOMIES, get_object_taxonomies( $post->post_type ) ) as $taxonomy ) {
+			$assigned = get_the_terms( $post, $taxonomy );
+			$list     = array();
+			foreach ( is_array( $assigned ) ? $assigned : array() as $term ) {
+				$list[] = array(
+					'slug' => $term->slug,
+					'name' => $term->name,
+				);
+			}
+			$terms[ $taxonomy ] = $list;
+		}
+		return $terms;
 	}
 
 	/**
@@ -328,13 +378,18 @@ class WPPS_Exporter {
 	 * Builds the media manifest from content/meta strings (plan §6.2).
 	 *
 	 * Every uploads reference (images in all forms AND linked files like
-	 * PDFs) resolves to a local original file; referenced-but-missing files
-	 * become pre-flight errors instead of silently breaking on the target.
+	 * PDFs) resolves to the file WordPress registers for its attachment
+	 * (resolve_file()); referenced-but-missing files become pre-flight
+	 * errors instead of silently breaking on the target. One attachment is
+	 * one manifest entry however many of its files the post references; the
+	 * referenced names other than the main file and its listed sizes travel
+	 * as "variants" so the receiver can rewrite them too.
 	 *
-	 * Files whose rel path fails the §4.3 transfer rules (umlauts, foreign
-	 * extensions) are excluded with a preflight WARNING instead of entering
-	 * the manifest: they would hard-abort the whole push at /media-upload.
-	 * The receiver-side scan pass still warns about their URLs.
+	 * Files whose rel path fails the §4.3 transfer rules (characters,
+	 * foreign extensions) are excluded with a preflight WARNING instead of
+	 * entering the manifest: they would hard-abort the whole push. Files
+	 * above WPPS_MAX_FILE_BYTES are a blocking pre-flight ERROR. The
+	 * receiver-side scan pass still warns about leftover URLs.
 	 *
 	 * @param string[] $strings    Strings to sweep.
 	 * @param string[] $extra_rels Additional rel paths (featured image).
@@ -344,32 +399,51 @@ class WPPS_Exporter {
 		$uploads = wp_upload_dir( null, false );
 		$hosts   = $this->known_hosts();
 
-		$rels     = array();
-		$errors   = array();
-		$warnings = array();
+		// Referenced rel path => label for the "missing" error.
+		$refs = array();
 		foreach ( $strings as $subject ) {
 			foreach ( WPPS_Rewriter::extract_uploads_refs( $subject, $hosts ) as $ref ) {
-				$resolved = $this->resolve_original( $ref['rel'], $uploads['basedir'] );
-				if ( null === $resolved ) {
-					/* translators: %s: referenced file URL. */
-					$errors[ $ref['rel'] ] = sprintf( __( 'Referenced upload file is missing on this site: %s', 'wp-page-sync' ), $ref['path'] );
-					continue;
-				}
-				if ( ! $this->transferable_rel( $resolved, $warnings ) ) {
-					continue;
-				}
-				$rels[ $resolved ] = true;
+				$refs[ $ref['rel'] ] = $ref['path'];
 			}
 		}
 		foreach ( $extra_rels as $rel ) {
-			if ( $this->transferable_rel( $rel, $warnings ) ) {
-				$rels[ $rel ] = true;
+			$refs[ $rel ] = $rel;
+		}
+
+		$files    = array();
+		$errors   = array();
+		$warnings = array();
+		foreach ( $refs as $rel => $label ) {
+			$resolved = $this->resolve_file( (string) $rel, $uploads['basedir'] );
+			if ( null === $resolved ) {
+				/* translators: %s: referenced file URL. */
+				$errors[ $rel ] = sprintf( __( 'Referenced upload file is missing on this site: %s', 'wp-page-sync' ), $label );
+				continue;
+			}
+			$main = $resolved['rel'];
+			if ( ! $this->transferable_rel( $main, $warnings ) ) {
+				continue;
+			}
+			if ( ! isset( $files[ $main ] ) ) {
+				$files[ $main ] = array(
+					'attachment_id' => $resolved['attachment_id'],
+					'variants'      => array(),
+				);
+			}
+			$variant = wp_basename( (string) $rel );
+			if ( $rel !== $main && WPPS_Importer::valid_path_segment( $variant ) ) {
+				$files[ $main ]['variants'][ $variant ] = true;
 			}
 		}
 
 		$manifest = array();
-		foreach ( array_keys( $rels ) as $rel ) {
-			$manifest[] = $this->manifest_entry( $rel, $uploads );
+		foreach ( $files as $main => $file ) {
+			$size = (int) filesize( $uploads['basedir'] . '/' . $main );
+			if ( $size > WPPS_MAX_FILE_BYTES ) {
+				$errors[ $main ] = WPPS_Importer::too_large_message( $main, $size );
+				continue;
+			}
+			$manifest[] = $this->manifest_entry( $main, $file['attachment_id'], array_keys( $file['variants'] ), $uploads );
 		}
 
 		return array(
@@ -396,22 +470,39 @@ class WPPS_Exporter {
 	}
 
 	/**
-	 * Resolves a referenced rel path to the original file's rel path.
+	 * Resolves a referenced rel path to the file that gets transferred.
 	 *
-	 * Size suffixes (-300x200) are stripped to find the original; when only
-	 * the suffixed file exists on disk it is treated as its own original.
+	 * A file owned by an attachment (the file itself, a size, the -scaled
+	 * main file or its untouched original) resolves to the attachment's
+	 * registered main file (_wp_attached_file), so every variant shares one
+	 * transfer and one attachment ID. A file without an attachment row keeps
+	 * the pre-1.3.0 rule: size suffix (-300x200) stripped when that file
+	 * exists, else the file itself.
 	 *
 	 * @param string $rel     Referenced rel path.
 	 * @param string $basedir Uploads base dir.
-	 * @return string|null Rel path of an existing file, or null.
+	 * @return array|null {rel, attachment_id} of an existing file, or null.
 	 */
-	private function resolve_original( $rel, $basedir ) {
-		$original = preg_replace( '/-\d+x\d+(\.[A-Za-z0-9]+)$/', '$1', $rel );
-		if ( file_exists( $basedir . '/' . $original ) ) {
-			return $original;
+	private function resolve_file( $rel, $basedir ) {
+		$attachment_id = WPPS_Importer::attachment_id_for_file( $rel );
+		if ( $attachment_id ) {
+			$main = (string) get_post_meta( $attachment_id, '_wp_attached_file', true );
+			if ( '' !== $main && file_exists( $basedir . '/' . $main ) ) {
+				return array(
+					'rel'           => $main,
+					'attachment_id' => $attachment_id,
+				);
+			}
 		}
-		if ( $original !== $rel && file_exists( $basedir . '/' . $rel ) ) {
-			return $rel;
+
+		$original = preg_replace( '/-\d+x\d+(\.[A-Za-z0-9]+)$/', '$1', $rel );
+		foreach ( array_unique( array( $original, $rel ) ) as $candidate ) {
+			if ( file_exists( $basedir . '/' . $candidate ) ) {
+				return array(
+					'rel'           => $candidate,
+					'attachment_id' => 0,
+				);
+			}
 		}
 		return null;
 	}
@@ -423,13 +514,14 @@ class WPPS_Exporter {
 	 * so the receiver can map source size URLs onto its own regenerated
 	 * size files even when the size dimensions differ between sites.
 	 *
-	 * @param string $rel     Rel path of the original file.
-	 * @param array  $uploads wp_upload_dir() array.
+	 * @param string   $rel      Rel path of the main file.
+	 * @param int      $att_id   Owning attachment ID (0 = none).
+	 * @param string[] $variants Other referenced file names of the attachment.
+	 * @param array    $uploads  wp_upload_dir() array.
 	 * @return array Manifest entry.
 	 */
-	private function manifest_entry( $rel, array $uploads ) {
-		$abs    = $uploads['basedir'] . '/' . $rel;
-		$att_id = WPPS_Importer::attachment_id_by_rel( $rel );
+	private function manifest_entry( $rel, $att_id, array $variants, array $uploads ) {
+		$abs = $uploads['basedir'] . '/' . $rel;
 
 		$mime = '';
 		$size = array();
@@ -447,13 +539,24 @@ class WPPS_Exporter {
 			$mime     = $filetype['type'] ? $filetype['type'] : 'application/octet-stream';
 		}
 
-		return array(
-			'source_url' => $uploads['baseurl'] . '/' . $rel,
-			'rel_path'   => $rel,
-			'sha256'     => hash_file( 'sha256', $abs ),
-			'mime'       => $mime,
-			'size'       => (int) filesize( $abs ),
-			'sizes'      => $size,
+		$entry = array(
+			'source_url'    => $uploads['baseurl'] . '/' . $rel,
+			'rel_path'      => $rel,
+			'sha256'        => hash_file( 'sha256', $abs ),
+			'mime'          => $mime,
+			'size'          => (int) filesize( $abs ),
+			'sizes'         => $size,
+			'variants'      => $variants,
+			'attachment_id' => $att_id,
 		);
+		if ( $att_id ) {
+			$entry['attachment_fields'] = array(
+				'title'       => (string) get_post_field( 'post_title', $att_id, 'raw' ),
+				'alt'         => (string) get_post_meta( $att_id, '_wp_attachment_image_alt', true ),
+				'caption'     => (string) get_post_field( 'post_excerpt', $att_id, 'raw' ),
+				'description' => (string) get_post_field( 'post_content', $att_id, 'raw' ),
+			);
+		}
+		return $entry;
 	}
 }

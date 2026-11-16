@@ -24,6 +24,8 @@
 		loading: 'Loading…',
 		noPeer: 'Connect a site first (Connections tab).',
 		noPosts: 'No posts found.',
+		filterEmpty: 'No posts match the current filter.',
+		filterCount: 'Showing %1$s of %2$s posts.',
 		push: 'Push',
 		pull: 'Pull',
 		pushTitle: 'Push to peer',
@@ -31,9 +33,11 @@
 		confirm: 'Confirm',
 		working: 'Working…',
 		done: 'Done.',
-		mediaFiles: 'Referenced media files:',
-		mediaTransfer: 'To transfer:',
-		forceLabel: 'Force: the copy on the target differs from this one and will be overwritten. Its current content stays available there as a post revision.',
+		mediaNone: 'Media: none referenced.',
+		mediaAllOnTarget: 'Media: %1$s referenced, all already on the target.',
+		mediaAllHere: 'Media: %1$s referenced, all already here.',
+		mediaToTransfer: 'Media: %1$s referenced, %2$s to transfer (%3$s).',
+		forceLabel: 'Force: the copy on the target differs from this one and will be overwritten. Its current title, content and excerpt are saved there as a post revision first, unless that site has revisions switched off or its post type does not support them.',
 		preflightErrors: 'Blocking problems (fix at the source first):',
 		warnings: 'Warnings:',
 		bulkConfirm: 'Push the selected posts (parents first)? Conflicting posts are skipped.',
@@ -44,6 +48,8 @@
 		failed: 'failed',
 		bulkSkipped: 'Skipped as conflicts (push each one on its own and confirm the force option):',
 		bulkFailed: 'Failed:',
+		bulkWarnings: 'Pushed with warnings:',
+		bulkRunning: 'A bulk push is still running. Wait for it to finish before syncing a single post.',
 		globalsAdded: 'Added classes',
 		globalsChanged: 'Changed classes',
 		globalsOnlyTarget: 'Only on target (kept, never deleted)',
@@ -189,7 +195,12 @@
 		$button.prop( 'disabled', true );
 		feedback( $fb, cfg.i18n.connecting, true );
 
-		post( 'wpps_connect', { key: key } ).done( function( response ) {
+		post( 'wpps_connect', {
+			key: key,
+			basic_auth_user: $.trim( $( '#wpps-connect-auth-user' ).val() || '' ),
+			// Byte-exact: a password may legitimately start or end with a space.
+			basic_auth_pass: $( '#wpps-connect-auth-pass' ).val() || ''
+		} ).done( function( response ) {
 			if ( response.success ) {
 				feedback( $fb, responseMessage( response ), true );
 				window.setTimeout( function() {
@@ -271,6 +282,11 @@
 
 	var modalConfirm = null;
 
+	// True while a push/pull started from the modal is in flight, see
+	// setModalBusy(). closeModal() reads it, which is what also blocks the
+	// backdrop click.
+	var modalBusy = false;
+
 	function currentPeer() {
 		return $( '#wpps-peer-select' ).val() || '';
 	}
@@ -299,8 +315,31 @@
 		return bytes + ' B';
 	}
 
-	function sprintf2( template, a, b ) {
-		return String( template ).replace( '%1$s', a ).replace( '%2$s', b );
+	// Fills the %1$s … %n$s placeholders of a localized string from an array.
+	function sprintfArgs( template, args ) {
+		return String( template ).replace( /%(\d+)\$s/g, function( placeholder, position ) {
+			var value = args[ position - 1 ];
+			return ( undefined === value ) ? placeholder : String( value );
+		} );
+	}
+
+	/*
+	 * Media summary for both preview modals. A bare "To transfer: 0 (0 B)" reads
+	 * as "nothing will happen" although it only ever means the files are already
+	 * in place while the post content still changes, so the zero case says that
+	 * outright and drops the meaningless size.
+	 */
+	function mediaLine( media, direction ) {
+		var files = media.files || 0;
+		var transfer = media.transfer_files || 0;
+
+		if ( 0 === files ) {
+			return cfg.i18n.mediaNone;
+		}
+		if ( 0 === transfer ) {
+			return sprintfArgs( 'pull' === direction ? cfg.i18n.mediaAllHere : cfg.i18n.mediaAllOnTarget, [ files ] );
+		}
+		return sprintfArgs( cfg.i18n.mediaToTransfer, [ files, transfer, formatBytes( media.transfer_bytes || 0 ) ] );
 	}
 
 	function listBlock( heading, items, cssClass ) {
@@ -313,8 +352,64 @@
 		return $wrap.append( $ul );
 	}
 
+	/**
+	 * Locks or unlocks the modal while a sync request is in flight.
+	 *
+	 * Locking is not cosmetic: the request writes to the other site, so every
+	 * control that could start a second one or pull the modal away from under
+	 * the running request has to stay shut until it settles.
+	 *
+	 * The overlay only blocks the mouse, and the dialog has no focus trap, so
+	 * the controls outside it stay reachable by keyboard. They are covered from
+	 * this same flag rather than from their own state: the bulk button through
+	 * updateBulkButton(), the buttons that would open a fresh preview through an
+	 * early return. The preview buttons deliberately are not disabled here,
+	 * because their disabled state already encodes "unsyncable" and "not on the
+	 * peer", which a blanket re-enable would throw away.
+	 *
+	 * Unlocking deliberately leaves #wpps-modal-confirm alone. Whether
+	 * confirming is allowed again depends on the branch (a rejected request may
+	 * be retried, a finished one must not run a second time from a now stale
+	 * preview), so each caller decides that itself. Everything that only exists
+	 * to let the user out is restored here, so no branch can leave the modal
+	 * unclosable.
+	 *
+	 * @param {boolean} busy Whether a request is in flight.
+	 * @return {void}
+	 */
+	function setModalBusy( busy ) {
+		modalBusy = busy;
+		$( '#wpps-modal-cancel, #wpps-modal-force' ).prop( 'disabled', busy );
+		if ( busy ) {
+			$( '#wpps-modal-confirm' ).prop( 'disabled', true );
+		}
+		updateBulkButton();
+	}
+
+	/**
+	 * Reflects a running bulk push in the modal.
+	 *
+	 * A bulk run writes to the same peer, so confirming a single push while it
+	 * is going has to be blocked. The click handler on #wpps-modal-confirm is
+	 * the actual guard; this only makes the block visible, so a preview opened
+	 * during a bulk run does not offer a button that silently does nothing.
+	 *
+	 * Opening the preview itself stays allowed: it only reads, and looking at a
+	 * post while a long bulk run finishes is useful.
+	 *
+	 * @return {void}
+	 */
+	function applyBulkLock() {
+		if ( ! bulkBusy ) {
+			return;
+		}
+		$( '#wpps-modal-confirm' ).prop( 'disabled', true );
+		feedback( $( '#wpps-modal-feedback' ), cfg.i18n.bulkRunning, false );
+	}
+
 	function openModal( title ) {
 		modalConfirm = null;
+		setModalBusy( false );
 		$( '#wpps-modal-title' ).text( title || cfg.i18n.loading );
 		$( '#wpps-modal-body' ).empty().append( $( '<p>' ).text( cfg.i18n.loading ) );
 		$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
@@ -325,6 +420,9 @@
 	}
 
 	function closeModal() {
+		if ( modalBusy ) {
+			return;
+		}
 		modalConfirm = null;
 		$( '#wpps-modal-overlay' ).addClass( 'wpps-hidden' );
 	}
@@ -336,26 +434,44 @@
 		}
 	} );
 	$( document ).on( 'click', '#wpps-modal-confirm', function() {
+		// Guarding the handler, not just the button's disabled state: that
+		// state is written from several places (renderPreview(), the force
+		// checkbox, every terminal branch of a run), so only the handler holds
+		// regardless of which of them wrote it last.
+		if ( bulkBusy ) {
+			feedback( $( '#wpps-modal-feedback' ), cfg.i18n.bulkRunning, false );
+			return;
+		}
 		if ( modalConfirm ) {
 			modalConfirm();
 		}
 	} );
+	// The checkbox only gates the confirm button while there is still something
+	// to confirm: after a completed run modalConfirm is cleared, and toggling
+	// force must not bring the button back for a second run from a stale
+	// preview.
 	$( document ).on( 'change', '#wpps-modal-force', function() {
-		if ( ! $( '#wpps-modal-force-row' ).hasClass( 'wpps-hidden' ) ) {
+		if ( modalConfirm && ! $( '#wpps-modal-force-row' ).hasClass( 'wpps-hidden' ) ) {
 			$( '#wpps-modal-confirm' ).prop( 'disabled', ! $( this ).is( ':checked' ) );
 		}
 	} );
 
 	function renderStatusRow( item ) {
+		// data-title mirrors the rendered title cell so the search matches what
+		// the user actually sees, including the "(draft)" placeholder.
+		var title = item.title || '(' + item.status + ')';
 		var $tr = $( '<tr>' )
+			.addClass( 'wpps-status-row' )
 			.attr( 'data-path', item.path )
-			.attr( 'data-post-type', item.post_type );
+			.attr( 'data-post-type', item.post_type )
+			.attr( 'data-sync-status', item.sync_status )
+			.attr( 'data-title', title );
 		var unsyncable = 'no_slug' === item.sync_status;
 
 		$tr.append( $( '<td>' ).addClass( 'check-column' ).append(
 			$( '<input>' ).attr( 'type', 'checkbox' ).addClass( 'wpps-row-check' ).prop( 'disabled', unsyncable )
 		) );
-		$tr.append( $( '<td>' ).text( item.title || '(' + item.status + ')' ) );
+		$tr.append( $( '<td>' ).text( title ) );
 		$tr.append( $( '<td>' ).append( $( '<code>' ).text( item.path || '—' ) ) );
 		$tr.append( $( '<td>' ).text( item.modified_gmt || '' ) );
 		$tr.append( $( '<td>' ).append( badge( item.sync_status ) ) );
@@ -408,12 +524,14 @@
 			updateGlobalsChip( response.data.globals );
 			if ( ! response.data.items.length ) {
 				$body.append( $( '<tr>' ).append( $( '<td>' ).attr( 'colspan', 6 ).text( cfg.i18n.noPosts ) ) );
-				return;
+			} else {
+				$.each( response.data.items, function( _, item ) {
+					$body.append( renderStatusRow( item ) );
+				} );
 			}
-			$.each( response.data.items, function( _, item ) {
-				$body.append( renderStatusRow( item ) );
-			} );
-			updateBulkButton();
+			// Re-apply the active filter so a reload does not reset the view.
+			rebuildStatusOptions();
+			applyFilter();
 		} ).fail( function( xhr ) {
 			feedback( $fb, failMessage( xhr ), false );
 		} );
@@ -424,6 +542,117 @@
 		$( '#wpps-posts-body' ).empty();
 		$( '#wpps-bulk-results' ).empty();
 		updateGlobalsChip( null );
+		rebuildStatusOptions();
+		applyFilter();
+	} );
+
+	/* ------------------------------------------------------------------ *
+	 * Status-list filter (client-side)
+	 *
+	 * The whole list is already in the DOM, so narrowing it costs no further
+	 * request. A row the filter hides is unchecked, and every selection helper
+	 * below counts visible rows only, so a bulk push can never act on a row the
+	 * user cannot see.
+	 * ------------------------------------------------------------------ */
+
+	var filterTimer = null;
+
+	/*
+	 * The dropdown offers exactly the statuses the loaded rows carry. Which
+	 * statuses a table can produce depends on the direction (missing_local,
+	 * for one, never occurs in "Posts on this site"), so a fixed list would
+	 * always contain options that match nothing. cfg.statuses stays the single
+	 * label source and also fixes the order.
+	 */
+	function rebuildStatusOptions() {
+		var $select = $( '#wpps-filter-status' );
+		var previous = $select.val() || '';
+		var present = {};
+
+		$( '#wpps-posts-body .wpps-status-row' ).each( function() {
+			var status = $( this ).attr( 'data-sync-status' );
+
+			if ( status ) {
+				present[ status ] = true;
+			}
+		} );
+
+		$select.find( 'option' ).not( '[value=""]' ).remove();
+		$.each( cfg.statuses, function( status, label ) {
+			if ( present[ status ] ) {
+				$select.append( $( '<option>' ).attr( 'value', status ).text( label ) );
+			}
+		} );
+
+		$select.val( present[ previous ] ? previous : '' );
+	}
+
+	// Selectable checkboxes of the currently visible rows.
+	function visibleChecks() {
+		return $( '#wpps-posts-body tr:not(.wpps-hidden) .wpps-row-check:not(:disabled)' );
+	}
+
+	function checkedRows() {
+		return visibleChecks().filter( ':checked' );
+	}
+
+	function rowMatches( $row, status, needle ) {
+		if ( status && $row.attr( 'data-sync-status' ) !== status ) {
+			return false;
+		}
+		if ( ! needle ) {
+			return true;
+		}
+		return ( $row.attr( 'data-title' ) || '' ).toLowerCase().indexOf( needle ) > -1 ||
+			( $row.attr( 'data-path' ) || '' ).toLowerCase().indexOf( needle ) > -1;
+	}
+
+	function renderFilterEmpty( show ) {
+		var $row = $( '#wpps-filter-empty' );
+
+		if ( ! show ) {
+			$row.remove();
+			return;
+		}
+		if ( ! $row.length ) {
+			$( '#wpps-posts-body' ).append(
+				$( '<tr>' ).attr( 'id', 'wpps-filter-empty' ).append(
+					$( '<td>' ).attr( 'colspan', 6 ).text( cfg.i18n.filterEmpty )
+				)
+			);
+		}
+	}
+
+	function applyFilter() {
+		var status = $( '#wpps-filter-status' ).val() || '';
+		var needle = $.trim( $( '#wpps-filter-search' ).val() || '' ).toLowerCase();
+		var $rows = $( '#wpps-posts-body .wpps-status-row' );
+		var visible = 0;
+
+		$rows.each( function() {
+			var $row = $( this );
+			var match = rowMatches( $row, status, needle );
+
+			$row.toggleClass( 'wpps-hidden', ! match );
+			if ( match ) {
+				visible++;
+			} else {
+				$row.find( '.wpps-row-check' ).prop( 'checked', false );
+			}
+		} );
+
+		$( '#wpps-filter-count' ).text(
+			$rows.length ? sprintfArgs( cfg.i18n.filterCount, [ visible, $rows.length ] ) : ''
+		);
+		renderFilterEmpty( $rows.length > 0 && 0 === visible );
+		syncCheckAll();
+		updateBulkButton();
+	}
+
+	$( document ).on( 'change', '#wpps-filter-status', applyFilter );
+	$( document ).on( 'input', '#wpps-filter-search', function() {
+		window.clearTimeout( filterTimer );
+		filterTimer = window.setTimeout( applyFilter, 180 );
 	} );
 
 	function renderPreview( data ) {
@@ -437,13 +666,7 @@
 				.append( $( '<code>' ).text( data.path || '' ) )
 		);
 		$modalBody.append( $( '<p>' ).append( badge( data.status ) ) );
-		$modalBody.append(
-			$( '<p>' ).text(
-				cfg.i18n.mediaFiles + ' ' + ( media.files || 0 ) + ' · ' +
-				cfg.i18n.mediaTransfer + ' ' + ( media.transfer_files || 0 ) +
-				' (' + formatBytes( media.transfer_bytes || 0 ) + ')'
-			)
-		);
+		$modalBody.append( $( '<p>' ).text( mediaLine( media, data.direction ) ) );
 		if ( blocked ) {
 			$modalBody.append( listBlock( cfg.i18n.preflightErrors, data.preflight.errors, 'wpps-report-errors' ) );
 		}
@@ -460,13 +683,14 @@
 		} else {
 			$( '#wpps-modal-confirm' ).prop( 'disabled', blocked );
 		}
+		applyBulkLock();
 	}
 
 	function executeSync( direction, postType, path ) {
 		var $fb = $( '#wpps-modal-feedback' );
 		var force = $( '#wpps-modal-force' ).is( ':checked' ) ? 1 : 0;
 
-		$( '#wpps-modal-confirm' ).prop( 'disabled', true );
+		setModalBusy( true );
 		feedback( $fb, cfg.i18n.working, true );
 
 		post( 'push' === direction ? 'wpps_push' : 'wpps_pull', {
@@ -475,10 +699,14 @@
 			path: path,
 			force: force
 		} ).done( function( response ) {
+			setModalBusy( false );
 			if ( response && response.success ) {
 				var warnings = ( response.data && response.data.warnings ) || [];
 				if ( warnings.length ) {
+					// The run is over: the force row belongs to the spent preview,
+					// so it must not sit next to the result still checked.
 					$( '#wpps-modal-body' ).empty().append( listBlock( cfg.i18n.warnings, warnings, 'wpps-report-warnings' ) );
+					$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
 					feedback( $fb, cfg.i18n.done, true );
 					modalConfirm = null;
 				} else {
@@ -490,12 +718,20 @@
 				$( '#wpps-modal-confirm' ).prop( 'disabled', false );
 			}
 		} ).fail( function( xhr ) {
+			setModalBusy( false );
 			feedback( $fb, failMessage( xhr ), false );
 			$( '#wpps-modal-confirm' ).prop( 'disabled', false );
 		} );
 	}
 
 	function openSyncPreview( direction, postType, path ) {
+		// Keyboard-reachable while the overlay blocks the mouse: opening a second
+		// preview would reset the busy flag and hand the user a confirm button
+		// while the first run is still writing to the peer.
+		if ( modalBusy ) {
+			return;
+		}
+
 		openModal( ( 'push' === direction ? cfg.i18n.pushTitle : cfg.i18n.pullTitle ) + ' · ' + path );
 
 		post( 'wpps_sync_preview', {
@@ -528,13 +764,31 @@
 
 	/* Bulk push: parents first (path depth, then alphabetical). */
 
+	// True while the bulk loop below is running, see updateBulkButton().
+	var bulkBusy = false;
+
+	// Single control point for the bulk button: it needs a selection, and it must
+	// stay shut while any run is still writing to the peer, its own or one
+	// started from the modal. setModalBusy() calls this, so both directions stay
+	// in sync and no other place sets this button's disabled state.
 	function updateBulkButton() {
-		$( '#wpps-bulk-push' ).prop( 'disabled', 0 === $( '.wpps-row-check:checked' ).length );
+		$( '#wpps-bulk-push' ).prop( 'disabled', modalBusy || bulkBusy || 0 === checkedRows().length );
 	}
 
-	$( document ).on( 'change', '.wpps-row-check', updateBulkButton );
+	// "Select all" reflects the visible selection: checked only while every
+	// selectable visible row is checked.
+	function syncCheckAll() {
+		var $checks = visibleChecks();
+
+		$( '#wpps-check-all' ).prop( 'checked', $checks.length > 0 && $checks.length === $checks.filter( ':checked' ).length );
+	}
+
+	$( document ).on( 'change', '.wpps-row-check', function() {
+		syncCheckAll();
+		updateBulkButton();
+	} );
 	$( document ).on( 'change', '#wpps-check-all', function() {
-		$( '.wpps-row-check:not(:disabled)' ).prop( 'checked', $( this ).is( ':checked' ) );
+		visibleChecks().prop( 'checked', $( this ).is( ':checked' ) );
 		updateBulkButton();
 	} );
 
@@ -543,7 +797,7 @@
 		var $results = $( '#wpps-bulk-results' ).empty();
 		var queue = [];
 
-		$( '.wpps-row-check:checked' ).each( function() {
+		checkedRows().each( function() {
 			var $tr = $( this ).closest( 'tr' );
 			queue.push( { post_type: $tr.attr( 'data-post-type' ), path: $tr.attr( 'data-path' ) } );
 		} );
@@ -563,7 +817,10 @@
 		var pushed = 0;
 		var skipped = [];
 		var failed = [];
-		var $button = $( this ).prop( 'disabled', true );
+		var warned = [];
+
+		bulkBusy = true;
+		updateBulkButton();
 
 		// A row the peer rejected for a missing force confirmation is a skip,
 		// not a failure: nothing was written and the user can still push it
@@ -581,12 +838,20 @@
 			if ( failed.length ) {
 				$results.append( listBlock( cfg.i18n.bulkFailed, failed, 'wpps-report-errors' ) );
 			}
+			if ( warned.length ) {
+				$results.append( listBlock( cfg.i18n.bulkWarnings, warned, 'wpps-report-warnings' ) );
+			}
 		}
 
 		function next() {
 			if ( ! queue.length ) {
+				// Unlock first, exactly like setModalBusy( false ) leads every
+				// terminal handler: report() renders peer-supplied data, and a
+				// throw in there must not leave the bulk button dead until the
+				// next page load.
+				bulkBusy = false;
+				updateBulkButton();
 				report();
-				$button.prop( 'disabled', false );
 				loadStatus();
 				return;
 			}
@@ -596,6 +861,11 @@
 				.done( function( response ) {
 					if ( response && response.success ) {
 						pushed++;
+						// One line per warning, prefixed with its post, so a long
+						// run still says which post each one belongs to.
+						$.each( ( response.data && response.data.warnings ) || [], function( _, warning ) {
+							warned.push( item.path + ': ' + warning );
+						} );
 					} else if ( response && response.data && 'wpps_conflict' === response.data.code ) {
 						skipped.push( item.path + ': ' + responseMessage( response ) );
 					} else {
@@ -690,19 +960,24 @@
 			} );
 			$modalBody.append( listBlock( cfg.i18n.colorsChanged, colorLines ) );
 		}
-		$modalBody.append(
-			$( '<p>' ).text( cfg.i18n.mediaTransfer + ' ' + ( media.transfer_files || 0 ) + ' (' + formatBytes( media.transfer_bytes || 0 ) + ')' )
-		);
+		$modalBody.append( $( '<p>' ).text( mediaLine( media, data.direction ) ) );
 		if ( blocked ) {
 			$modalBody.append( listBlock( cfg.i18n.preflightErrors, data.preflight.errors, 'wpps-report-errors' ) );
 		}
 
 		$( '#wpps-modal-confirm' ).prop( 'disabled', blocked );
+		applyBulkLock();
 	}
 
 	$( document ).on( 'click', '.wpps-globals-preview', function() {
 		var direction = $( this ).attr( 'data-direction' );
 		var $fb = $( '#wpps-globals-feedback' );
+
+		// Same reason as in openSyncPreview(): reachable by keyboard while a run
+		// from the modal is in flight, and opening a preview clears the lock.
+		if ( modalBusy ) {
+			return;
+		}
 
 		if ( ! currentPeer() ) {
 			feedback( $fb, cfg.i18n.noPeer, false );
@@ -718,13 +993,16 @@
 			renderGlobalsPreview( response.data );
 			modalConfirm = function() {
 				var $modalFb = $( '#wpps-modal-feedback' );
-				$( '#wpps-modal-confirm' ).prop( 'disabled', true );
+				setModalBusy( true );
 				feedback( $modalFb, cfg.i18n.working, true );
 				post( 'wpps_globals_sync', { peer_id: currentPeer(), direction: direction } ).done( function( syncResponse ) {
+					setModalBusy( false );
 					if ( syncResponse && syncResponse.success ) {
 						var warnings = ( syncResponse.data && syncResponse.data.warnings ) || [];
 						if ( warnings.length ) {
+							// Terminal branch, same treatment as executeSync().
 							$( '#wpps-modal-body' ).empty().append( listBlock( cfg.i18n.warnings, warnings, 'wpps-report-warnings' ) );
+							$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
 							feedback( $modalFb, cfg.i18n.done, true );
 							modalConfirm = null;
 						} else {
@@ -736,6 +1014,7 @@
 						$( '#wpps-modal-confirm' ).prop( 'disabled', false );
 					}
 				} ).fail( function( xhr ) {
+					setModalBusy( false );
 					feedback( $modalFb, failMessage( xhr ), false );
 					$( '#wpps-modal-confirm' ).prop( 'disabled', false );
 				} );
@@ -774,7 +1053,7 @@
 
 	function renderVerifyReport( errors, warnings, scanned, total ) {
 		var $results = $( '#wpps-verify-results' ).empty();
-		$results.append( $( '<p>' ).text( sprintf2( cfg.i18n.scannedOf, scanned, total ) ) );
+		$results.append( $( '<p>' ).text( sprintfArgs( cfg.i18n.scannedOf, [ scanned, total ] ) ) );
 		if ( ! errors.length && ! warnings.length ) {
 			$results.append( $( '<p>' ).addClass( 'wpps-feedback-ok' ).text( cfg.i18n.verifyClean ) );
 			return;
@@ -805,7 +1084,7 @@
 				scanned += data.scanned || 0;
 
 				var total = data.total || 0;
-				feedback( $fb, cfg.i18n.verifyRunning + ' ' + sprintf2( cfg.i18n.scannedOf, scanned, total ), true );
+				feedback( $fb, cfg.i18n.verifyRunning + ' ' + sprintfArgs( cfg.i18n.scannedOf, [ scanned, total ] ), true );
 
 				if ( scanned < total && data.scanned > 0 ) {
 					batch( offset + limit );
@@ -843,9 +1122,13 @@
 			$body.empty();
 			$.each( response.data.entries || [], function( _, entry ) {
 				var $tr = $( '<tr>' );
+				var $message = $( '<td>' ).text( entry.message );
+				if ( entry.warnings && entry.warnings.length ) {
+					$message.append( listBlock( '', entry.warnings, 'wpps-report-warnings' ) );
+				}
 				$tr.append( $( '<td>' ).text( entry.time ) );
 				$tr.append( $( '<td>' ).append( $( '<code>' ).text( entry.type ) ) );
-				$tr.append( $( '<td>' ).text( entry.message ) );
+				$tr.append( $message );
 				$body.append( $tr );
 			} );
 		} ).fail( function( xhr ) {

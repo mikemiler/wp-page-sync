@@ -98,7 +98,10 @@ class WPPS_Rewriter {
 	 *
 	 * Longest source path first so size variants win over their original.
 	 * Matches all three URL forms; a JSON-escaped occurrence is replaced with
-	 * the JSON-escaped target URL.
+	 * the JSON-escaped target URL. A path byte outside [A-Za-z0-9._~-] (a
+	 * non-ASCII letter, "@") matches raw or percent-encoded in either hex
+	 * case, and an occurrence found percent-encoded gets the target URL in
+	 * the same encoding.
 	 *
 	 * @param string $subject Content string.
 	 * @param array  $map     source URL => target URL.
@@ -116,28 +119,24 @@ class WPPS_Rewriter {
 
 		foreach ( $sources as $source ) {
 			$host = self::bare_host( $source );
-			$path = (string) wp_parse_url( $source, PHP_URL_PATH );
+			$path = self::url_path( $source );
 			if ( '' === $host || '' === $path ) {
 				continue;
 			}
 
-			$path_regex = '';
-			foreach ( str_split( $path ) as $char ) {
-				$path_regex .= ( '/' === $char ) ? '(?:\\\\?/)' : preg_quote( $char, '~' );
-			}
-
 			// The trailing lookahead keeps "img.jpg" from matching inside "img.jpg.webp".
 			$pattern = '~(?:https?:)?(?:\\\\?/){2}(?:www\.)?' . preg_quote( $host, '~' )
-				. '(?![a-zA-Z0-9.-])(?::\d+)?' . $path_regex . '(?![A-Za-z0-9._\~%-])~i';
+				. '(?![a-zA-Z0-9.-])(?::\d+)?' . self::path_regex( $path ) . '(?![A-Za-z0-9._\~%@\x80-\xFF-])~i';
 
 			$target = (string) $map[ $source ];
 			$result = preg_replace_callback(
 				$pattern,
 				function ( $matched ) use ( $target ) {
+					$replacement = ( false !== strpos( $matched[0], '%' ) ) ? self::encode_url_path( $target ) : $target;
 					if ( false !== strpos( $matched[0], '\/' ) ) {
-						return str_replace( '/', '\/', $target );
+						return str_replace( '/', '\/', $replacement );
 					}
-					return $target;
+					return $replacement;
 				},
 				$subject
 			);
@@ -147,6 +146,148 @@ class WPPS_Rewriter {
 		}
 
 		return $subject;
+	}
+
+	/**
+	 * Path of an absolute or protocol-relative URL, cut by string position.
+	 *
+	 * Not wp_parse_url(): PHP's parse_url() on macOS/BSD replaces the bytes
+	 * 0x80-0x9F with "_", which mangles UTF-8 file and page names such as
+	 * "größe.jpg" or "фото.jpg".
+	 *
+	 * @param string $url URL.
+	 * @return string Path without query and fragment, "" when there is none.
+	 */
+	public static function url_path( $url ) {
+		$url        = (string) $url;
+		$scheme_end = strpos( $url, '//' );
+		if ( false === $scheme_end ) {
+			return '';
+		}
+		$authority_end = $scheme_end + 2 + strcspn( $url, '/?#', $scheme_end + 2 );
+		$rest          = (string) substr( $url, $authority_end );
+		if ( '' === $rest || '/' !== $rest[0] ) {
+			return '';
+		}
+		return (string) preg_split( '/[?#]/', $rest )[0];
+	}
+
+	/**
+	 * Regex for a URL path in all forms the media-map pass accepts: "/" may
+	 * be JSON-escaped, any byte outside the unreserved set may be raw or
+	 * percent-encoded (the pattern runs with /i, so %c3 and %C3 both match).
+	 *
+	 * @param string $path Raw (decoded) URL path.
+	 * @return string Regex fragment for ~ delimiters.
+	 */
+	private static function path_regex( $path ) {
+		$regex = '';
+		foreach ( str_split( $path ) as $char ) {
+			if ( '/' === $char ) {
+				$regex .= '(?:\\\\?/)';
+			} elseif ( preg_match( '/[A-Za-z0-9._~-]/', $char ) ) {
+				$regex .= preg_quote( $char, '~' );
+			} else {
+				$regex .= '(?:' . preg_quote( $char, '~' ) . '|%' . strtoupper( bin2hex( $char ) ) . ')';
+			}
+		}
+		return $regex;
+	}
+
+	/**
+	 * Percent-encodes the non-ASCII bytes and "@" in a URL's path, for a
+	 * target written back into an occurrence that was percent-encoded.
+	 *
+	 * @param string $url Absolute URL.
+	 * @return string
+	 */
+	private static function encode_url_path( $url ) {
+		$scheme_end = strpos( $url, '//' );
+		$path_start = strpos( $url, '/', ( false === $scheme_end ) ? 0 : $scheme_end + 2 );
+		if ( false === $path_start ) {
+			return $url;
+		}
+		$encoded = preg_replace_callback(
+			'/[\x80-\xFF@]/',
+			function ( $byte ) {
+				return '%' . strtoupper( bin2hex( $byte[0] ) );
+			},
+			substr( $url, $path_start )
+		);
+		return substr( $url, 0, $path_start ) . $encoded;
+	}
+
+	/**
+	 * Attachment-ID pass: source attachment IDs become target IDs.
+	 *
+	 * Rewrites "id"/"mediaId" in the attribute JSON of media block openers
+	 * (core image, video, audio, file, cover, media-text; GenerateBlocks
+	 * media and image) and wp-image-N classes. One preg_replace_callback over
+	 * the whole string, so an ID that was just written is never mapped a
+	 * second time (source 5 => 9 next to source 9 => 12).
+	 *
+	 * @param string          $subject Post content.
+	 * @param array<int, int> $ids     Source attachment ID => target attachment ID.
+	 * @return string
+	 */
+	public static function rewrite_attachment_ids( $subject, array $ids ) {
+		if ( empty( $ids ) ) {
+			return (string) $subject;
+		}
+		return self::map_attachment_ids(
+			$subject,
+			function ( $id ) use ( $ids ) {
+				return isset( $ids[ (int) $id ] ) ? (string) $ids[ (int) $id ] : $id;
+			}
+		);
+	}
+
+	/**
+	 * Hashing variant of the attachment-ID pass: every ID it covers becomes
+	 * 0, so two copies whose only difference is their site-specific
+	 * attachment IDs hash equal.
+	 *
+	 * @param string $subject Post content.
+	 * @return string
+	 */
+	public static function neutralize_attachment_ids( $subject ) {
+		return self::map_attachment_ids(
+			$subject,
+			function () {
+				return '0';
+			}
+		);
+	}
+
+	/**
+	 * Shared attachment-ID replacement over the allowlisted block openers
+	 * and wp-image-N classes.
+	 *
+	 * @param string   $subject Post content.
+	 * @param callable $map_id  Receives an ID string, returns its replacement.
+	 * @return string
+	 */
+	private static function map_attachment_ids( $subject, callable $map_id ) {
+		$subject = (string) $subject;
+		$result  = preg_replace_callback(
+			'~(<!--\s+wp:(?:(?:core/)?(?:image|video|audio|file|cover|media-text)|generateblocks/(?:media|image))\s+)(\{.*?\})(\s+/?-->)|\bwp-image-(\d+)\b~s',
+			function ( $m ) use ( $map_id ) {
+				if ( isset( $m[4] ) && '' !== $m[4] ) {
+					return 'wp-image-' . $map_id( $m[4] );
+				}
+				$attrs = preg_replace_callback(
+					'~"(id|mediaId)":(\d+)~',
+					function ( $attr ) use ( $map_id ) {
+						return '"' . $attr[1] . '":' . $map_id( $attr[2] );
+					},
+					$m[2]
+				);
+				return $m[1] . $attrs . $m[3];
+			},
+			$subject
+		);
+
+		return ( null !== $result ) ? $result : $subject;
 	}
 
 	/**

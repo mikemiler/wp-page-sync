@@ -43,6 +43,15 @@ defined( 'ABSPATH' ) || exit;
 		<input type="text" id="wpps-connect-key" class="large-text code" placeholder="<?php esc_attr_e( 'Paste connection key', 'wp-page-sync' ); ?>">
 	</p>
 	<p>
+		<label for="wpps-connect-auth-user"><?php esc_html_e( 'Basic Auth username', 'wp-page-sync' ); ?></label><br>
+		<input type="text" id="wpps-connect-auth-user" class="regular-text" autocomplete="off">
+	</p>
+	<p>
+		<label for="wpps-connect-auth-pass"><?php esc_html_e( 'Basic Auth password', 'wp-page-sync' ); ?></label><br>
+		<input type="password" id="wpps-connect-auth-pass" class="regular-text" autocomplete="new-password">
+	</p>
+	<p class="description"><?php esc_html_e( 'Only needed if the other site is protected by HTTP Basic Auth (browser password prompt). In that case, create the connection key on the protected site and connect here. To change the credentials later, disconnect and connect again.', 'wp-page-sync' ); ?></p>
+	<p>
 		<button type="button" class="button button-primary" id="wpps-connect"><?php esc_html_e( 'Connect', 'wp-page-sync' ); ?></button>
 		<span id="wpps-connect-feedback" class="wpps-feedback"></span>
 	</p>

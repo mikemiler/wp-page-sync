@@ -83,6 +83,7 @@ class WPPS_Admin {
 		add_action( 'wp_ajax_wpps_globals_sync', array( $this, 'ajax_globals_sync' ) );
 		add_action( 'wp_ajax_wpps_verify', array( $this, 'ajax_verify' ) );
 		add_action( 'wp_ajax_wpps_get_log', array( $this, 'ajax_get_log' ) );
+		add_action( 'wp_ajax_wpps_editor_check', array( $this, 'ajax_editor_check' ) );
 	}
 
 	/**
@@ -102,12 +103,42 @@ class WPPS_Admin {
 	}
 
 	/**
-	 * Enqueues admin assets on the plugin page only.
+	 * Sync status keys mapped to their translated labels.
+	 *
+	 * Single source for the JS status badges and the Sync tab status filter, so
+	 * the two lists can never drift apart. The keys are the raw status values
+	 * WPPS_Sync::compute_status() produces.
+	 *
+	 * @return array<string,string> Status key => translated label.
+	 */
+	public static function status_labels() {
+		return array(
+			'in_sync'         => __( 'In sync', 'wp-page-sync' ),
+			'in_sync_adopted' => __( 'In sync (adopted)', 'wp-page-sync' ),
+			'local_newer'     => __( 'Local newer', 'wp-page-sync' ),
+			'peer_newer'      => __( 'Peer newer', 'wp-page-sync' ),
+			'diverged'        => __( 'Diverged', 'wp-page-sync' ),
+			'never_synced'    => __( 'Differs (never synced)', 'wp-page-sync' ),
+			'missing_on_peer' => __( 'Missing on peer', 'wp-page-sync' ),
+			'missing_local'   => __( 'New from peer', 'wp-page-sync' ),
+			'no_slug'         => __( 'No slug (unsyncable)', 'wp-page-sync' ),
+		);
+	}
+
+	/**
+	 * Enqueues admin assets on the plugin page, and the much smaller editor
+	 * check on the edit screen of an existing post.
 	 *
 	 * @param string $hook Current admin page hook.
 	 * @return void
 	 */
 	public function enqueue_assets( $hook ) {
+		// post-new.php is deliberately not covered: an unsaved post has no
+		// counterpart on any peer yet, so there is nothing to compare.
+		if ( 'post.php' === $hook ) {
+			$this->enqueue_editor_assets();
+			return;
+		}
 		if ( 'toplevel_page_' . self::PAGE_SLUG !== $hook ) {
 			return;
 		}
@@ -121,17 +152,7 @@ class WPPS_Admin {
 				'ajaxUrl'     => admin_url( 'admin-ajax.php' ),
 				'nonce'       => wp_create_nonce( self::NONCE_ACTION ),
 				'verifyBatch' => 10,
-				'statuses'    => array(
-					'in_sync'         => __( 'In sync', 'wp-page-sync' ),
-					'in_sync_adopted' => __( 'In sync (adopted)', 'wp-page-sync' ),
-					'local_newer'     => __( 'Local newer', 'wp-page-sync' ),
-					'peer_newer'      => __( 'Peer newer', 'wp-page-sync' ),
-					'diverged'        => __( 'Diverged', 'wp-page-sync' ),
-					'never_synced'    => __( 'Differs (never synced)', 'wp-page-sync' ),
-					'missing_on_peer' => __( 'Missing on peer', 'wp-page-sync' ),
-					'missing_local'   => __( 'New from peer', 'wp-page-sync' ),
-					'no_slug'         => __( 'No slug (unsyncable)', 'wp-page-sync' ),
-				),
+				'statuses'    => self::status_labels(),
 				'i18n'        => array(
 					'copied'            => __( 'Key copied to clipboard.', 'wp-page-sync' ),
 					'copyFailed'        => __( 'Copy failed. Select the key and copy it manually.', 'wp-page-sync' ),
@@ -143,6 +164,9 @@ class WPPS_Admin {
 					'loading'           => __( 'Loading…', 'wp-page-sync' ),
 					'noPeer'            => __( 'Connect a site first (Connections tab).', 'wp-page-sync' ),
 					'noPosts'           => __( 'No posts found.', 'wp-page-sync' ),
+					'filterEmpty'       => __( 'No posts match the current filter.', 'wp-page-sync' ),
+					/* translators: 1: number of posts matching the filter, 2: total number of listed posts. */
+					'filterCount'       => __( 'Showing %1$s of %2$s posts.', 'wp-page-sync' ),
 					'push'              => __( 'Push', 'wp-page-sync' ),
 					'pull'              => __( 'Pull', 'wp-page-sync' ),
 					'pushTitle'         => __( 'Push to peer', 'wp-page-sync' ),
@@ -150,9 +174,14 @@ class WPPS_Admin {
 					'confirm'           => __( 'Confirm', 'wp-page-sync' ),
 					'working'           => __( 'Working…', 'wp-page-sync' ),
 					'done'              => __( 'Done.', 'wp-page-sync' ),
-					'mediaFiles'        => __( 'Referenced media files:', 'wp-page-sync' ),
-					'mediaTransfer'     => __( 'To transfer:', 'wp-page-sync' ),
-					'forceLabel'        => __( 'Force: the copy on the target differs from this one and will be overwritten. Its current content stays available there as a post revision.', 'wp-page-sync' ),
+					'mediaNone'         => __( 'Media: none referenced.', 'wp-page-sync' ),
+					/* translators: %1$s: number of referenced media files. */
+					'mediaAllOnTarget'  => __( 'Media: %1$s referenced, all already on the target.', 'wp-page-sync' ),
+					/* translators: %1$s: number of referenced media files. */
+					'mediaAllHere'      => __( 'Media: %1$s referenced, all already here.', 'wp-page-sync' ),
+					/* translators: 1: number of referenced media files, 2: number of files to transfer, 3: formatted transfer size. */
+					'mediaToTransfer'   => __( 'Media: %1$s referenced, %2$s to transfer (%3$s).', 'wp-page-sync' ),
+					'forceLabel'        => __( 'Force: the copy on the target differs from this one and will be overwritten. Its current title, content and excerpt are saved there as a post revision first, unless that site has revisions switched off or its post type does not support them.', 'wp-page-sync' ),
 					'preflightErrors'   => __( 'Blocking problems (fix at the source first):', 'wp-page-sync' ),
 					'warnings'          => __( 'Warnings:', 'wp-page-sync' ),
 					'bulkConfirm'       => __( 'Push the selected posts (parents first)? Conflicting posts are skipped.', 'wp-page-sync' ),
@@ -163,6 +192,8 @@ class WPPS_Admin {
 					'failed'            => __( 'failed', 'wp-page-sync' ),
 					'bulkSkipped'       => __( 'Skipped as conflicts (push each one on its own and confirm the force option):', 'wp-page-sync' ),
 					'bulkFailed'        => __( 'Failed:', 'wp-page-sync' ),
+					'bulkWarnings'      => __( 'Pushed with warnings:', 'wp-page-sync' ),
+					'bulkRunning'       => __( 'A bulk push is still running. Wait for it to finish before syncing a single post.', 'wp-page-sync' ),
 					'globalsAdded'      => __( 'Added classes', 'wp-page-sync' ),
 					'globalsChanged'    => __( 'Changed classes', 'wp-page-sync' ),
 					'globalsOnlyTarget' => __( 'Only on target (kept, never deleted)', 'wp-page-sync' ),
@@ -185,6 +216,74 @@ class WPPS_Admin {
 					'peerOnly'          => __( 'Only on peer', 'wp-page-sync' ),
 				),
 			)
+		);
+	}
+
+	/**
+	 * Enqueues the editor check on post.php, for syncable post types only,
+	 * for users who may sync, and only while a peer is connected.
+	 *
+	 * Deliberately does NOT load the big admin script: the editor needs the
+	 * check and the notice, nothing else.
+	 *
+	 * @return void
+	 */
+	private function enqueue_editor_assets() {
+		$post = get_post();
+
+		if ( ! current_user_can( 'manage_options' )
+			|| ! $post instanceof WP_Post
+			|| ! in_array( $post->post_type, WPPS_Exporter::SYNCABLE_POST_TYPES, true )
+			|| '' === $post->post_name
+			|| ! $this->peers->get_peers() ) {
+			return;
+		}
+
+		wp_enqueue_style( 'wpps-admin', WPPS_PLUGIN_URL . 'admin/css/wpps-admin.css', array(), WPPS_VERSION );
+		wp_enqueue_script( 'wpps-editor', WPPS_PLUGIN_URL . 'admin/js/wpps-editor.js', array( 'jquery' ), WPPS_VERSION, true );
+		wp_localize_script(
+			'wpps-editor',
+			'wppsEditor',
+			array(
+				'ajaxUrl'  => admin_url( 'admin-ajax.php' ),
+				'nonce'    => wp_create_nonce( self::NONCE_ACTION ),
+				'postId'   => $post->ID,
+				'syncUrl'  => add_query_arg(
+					array(
+						'page' => self::PAGE_SLUG,
+						'tab'  => 'sync',
+					),
+					admin_url( 'admin.php' )
+				),
+				'statuses' => self::status_labels(),
+				'i18n'     => self::editor_i18n(),
+			)
+		);
+	}
+
+	/**
+	 * Strings of the editor notice.
+	 *
+	 * @return array<string,string>
+	 */
+	private static function editor_i18n() {
+		return array(
+			'titleNewer'    => __( 'A newer version exists on a connected site', 'wp-page-sync' ),
+			'titleDiverged' => __( 'This post changed on both sides', 'wp-page-sync' ),
+			'intro'         => __( 'This post is out of sync with a connected site:', 'wp-page-sync' ),
+			/* translators: %1$s: name of the connected site. */
+			'rowNewer'      => __( '%1$s has a newer version of this post. Pulling it replaces what you see in the editor with that version.', 'wp-page-sync' ),
+			/* translators: %1$s: name of the connected site. */
+			'rowDiverged'   => __( 'This post changed here AND on %1$s since the last sync, so no side is simply newer. Pulling would discard the changes made here, which is a decision for the Sync tab, not for this notice.', 'wp-page-sync' ),
+			'pullReload'    => __( 'Pull now and reload', 'wp-page-sync' ),
+			'openSync'      => __( 'Open the Sync tab', 'wp-page-sync' ),
+			'dismiss'       => __( 'Continue editing', 'wp-page-sync' ),
+			'confirmPull'   => __( 'Pulling replaces this post with the version from the connected site and reloads the editor. Anything not saved here yet is lost. Continue?', 'wp-page-sync' ),
+			'working'       => __( 'Pulling…', 'wp-page-sync' ),
+			'error'         => __( 'The pull failed. Nothing was changed here.', 'wp-page-sync' ),
+			'pulledTitle'   => __( 'Pulled, with warnings', 'wp-page-sync' ),
+			'pulledIntro'   => __( 'The post was pulled, but the sync reported the following. Reload the editor to see the pulled version; saving the editor as it is would overwrite it.', 'wp-page-sync' ),
+			'reload'        => __( 'Reload now', 'wp-page-sync' ),
 		);
 	}
 
@@ -282,16 +381,20 @@ class WPPS_Admin {
 			wp_send_json_error( array( 'message' => __( 'A connection with this key already exists.', 'wp-page-sync' ) ) );
 		}
 
-		$peer = array(
-			'peer_id'        => $data['key_id'],
-			'name'           => (string) wp_parse_url( $data['site'], PHP_URL_HOST ),
-			'url'            => $data['site'],
-			'rest_url'       => $data['rest'],
-			'uploads_url'    => '',
-			'secret'         => $data['secret'],
-			'connected_at'   => time(),
-			'allow_incoming' => WPPS_Peers::default_allow_incoming(),
-			'last_seen'      => 0,
+		// Stored with the peer before the handshake, which already needs them.
+		$peer = array_merge(
+			array(
+				'peer_id'        => $data['key_id'],
+				'name'           => (string) wp_parse_url( $data['site'], PHP_URL_HOST ),
+				'url'            => $data['site'],
+				'rest_url'       => $data['rest'],
+				'uploads_url'    => '',
+				'secret'         => $data['secret'],
+				'connected_at'   => time(),
+				'allow_incoming' => WPPS_Peers::default_allow_incoming(),
+				'last_seen'      => 0,
+			),
+			$this->posted_basic_auth()
 		);
 		$this->peers->add_peer( $peer );
 
@@ -421,6 +524,7 @@ class WPPS_Admin {
 	public function ajax_sync_preview() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result(
 			$this->sync->preview( $this->posted_peer(), $this->posted_post_type(), $this->posted_path(), $this->posted_direction() )
@@ -435,6 +539,7 @@ class WPPS_Admin {
 	public function ajax_push() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result(
 			$this->sync->push( $this->posted_peer(), $this->posted_post_type(), $this->posted_path(), $this->posted_force() )
@@ -449,6 +554,7 @@ class WPPS_Admin {
 	public function ajax_pull() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result(
 			$this->sync->pull( $this->posted_peer(), $this->posted_post_type(), $this->posted_path(), $this->posted_force() )
@@ -475,6 +581,7 @@ class WPPS_Admin {
 	public function ajax_globals_sync() {
 		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
 		$this->require_admin();
+		wpps_raise_limits();
 
 		$this->send_result( $this->sync->globals_sync( $this->posted_peer(), $this->posted_direction() ) );
 	}
@@ -522,13 +629,56 @@ class WPPS_Admin {
 		$entries = array();
 		foreach ( array_reverse( WPPS_Log::get_entries() ) as $entry ) {
 			$entries[] = array(
-				'time'    => wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $entry['time'] ),
-				'type'    => (string) $entry['type'],
-				'message' => (string) $entry['message'],
+				'time'     => wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $entry['time'] ),
+				'type'     => (string) $entry['type'],
+				'message'  => (string) $entry['message'],
+				'warnings' => ( isset( $entry['warnings'] ) && is_array( $entry['warnings'] ) ) ? array_values( $entry['warnings'] ) : array(),
 			);
 		}
 
 		wp_send_json_success( array( 'entries' => $entries ) );
+	}
+
+	/**
+	 * AJAX: per-peer sync status of one post, for the editor notice.
+	 *
+	 * Reports only the two statuses the notice acts on (peer_newer,
+	 * diverged). A peer that errors, times out or is unreachable is skipped
+	 * silently on purpose: the editor must never be interrupted by a sync
+	 * problem it cannot solve.
+	 *
+	 * @return void
+	 */
+	public function ajax_editor_check() {
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		$this->require_admin();
+
+		$post_id = isset( $_POST['post_id'] ) ? absint( wp_unslash( $_POST['post_id'] ) ) : 0;
+		$post    = $post_id ? get_post( $post_id ) : null;
+		if ( ! $post instanceof WP_Post || ! in_array( $post->post_type, WPPS_Exporter::SYNCABLE_POST_TYPES, true ) ) {
+			wp_send_json_success( array( 'peers' => array() ) );
+		}
+
+		$reported = array();
+		foreach ( $this->peers->get_peers() as $peer ) {
+			$status = $this->sync->post_sync_status( $peer, $post );
+			if ( is_wp_error( $status ) || ! in_array( $status, array( 'peer_newer', 'diverged' ), true ) ) {
+				continue;
+			}
+			$reported[] = array(
+				'peer_id' => (string) $peer['peer_id'],
+				'name'    => (string) ( ! empty( $peer['name'] ) ? $peer['name'] : $peer['url'] ),
+				'status'  => $status,
+			);
+		}
+
+		wp_send_json_success(
+			array(
+				'post_type' => $post->post_type,
+				'path'      => (string) get_page_uri( $post ),
+				'peers'     => $reported,
+			)
+		);
 	}
 
 	/**
@@ -562,6 +712,40 @@ class WPPS_Admin {
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- check_ajax_referer runs in every calling handler.
 		$peer_id = isset( $_POST['peer_id'] ) ? sanitize_text_field( wp_unslash( $_POST['peer_id'] ) ) : '';
 		return $this->get_valid_peer( $peer_id );
+	}
+
+	/**
+	 * Optional HTTP Basic Auth credentials of the peer's web server from the
+	 * connect form ($_POST['basic_auth_user'], $_POST['basic_auth_pass']).
+	 *
+	 * Both empty means none. The password is kept byte-exact (only
+	 * unslashed): it is never output, only base64-encoded into the
+	 * Authorization header. RFC 7617 forbids a colon in the username.
+	 *
+	 * @return array {basic_auth_user, basic_auth_pass}, or an empty array.
+	 */
+	private function posted_basic_auth() {
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- check_ajax_referer runs in the calling handler.
+		// Non-string input (basic_auth_user[]=x) counts as absent.
+		$user = isset( $_POST['basic_auth_user'] ) && is_string( $_POST['basic_auth_user'] ) ? sanitize_text_field( wp_unslash( $_POST['basic_auth_user'] ) ) : '';
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- password must stay byte-exact; never output or stored anywhere but the peer record.
+		$pass = isset( $_POST['basic_auth_pass'] ) && is_string( $_POST['basic_auth_pass'] ) ? wp_unslash( $_POST['basic_auth_pass'] ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+
+		if ( '' === $user && '' === $pass ) {
+			return array();
+		}
+		if ( '' === $user || '' === $pass ) {
+			wp_send_json_error( array( 'message' => __( 'Enter both the Basic Auth username and password, or leave both empty.', 'wp-page-sync' ) ) );
+		}
+		if ( false !== strpos( $user, ':' ) ) {
+			wp_send_json_error( array( 'message' => __( 'The Basic Auth username must not contain a colon.', 'wp-page-sync' ) ) );
+		}
+
+		return array(
+			'basic_auth_user' => $user,
+			'basic_auth_pass' => $pass,
+		);
 	}
 
 	/**
@@ -635,7 +819,7 @@ class WPPS_Admin {
 	 * @return array Peer record.
 	 */
 	private function get_valid_peer( $peer_id ) {
-		if ( ! preg_match( '/^[0-9a-f]{8}$/', $peer_id ) ) {
+		if ( ! preg_match( '/^[0-9a-f]{8}$/D', $peer_id ) ) {
 			wp_send_json_error( array( 'message' => __( 'Invalid peer.', 'wp-page-sync' ) ) );
 		}
 		$peer = $this->peers->get_peer( $peer_id );
@@ -650,6 +834,8 @@ class WPPS_Admin {
 	 *
 	 * The peer's uploads_url is unknown at pairing time on the key-creating
 	 * side (plan §4.1) and gets refreshed here on every successful ping.
+	 * For a peer with Basic Auth credentials, a new rest_url must keep the
+	 * stored host, so the credentials can never be redirected to another one.
 	 *
 	 * @param string $peer_id  Peer id.
 	 * @param array  $response Handshake or /info response body.
@@ -668,11 +854,28 @@ class WPPS_Admin {
 			$rest_url = esc_url_raw( $response['rest_url'] );
 			$scheme   = (string) wp_parse_url( $rest_url, PHP_URL_SCHEME );
 			$host     = (string) wp_parse_url( $rest_url, PHP_URL_HOST );
-			if ( 'https' === $scheme || WPPS_Client::is_local_host( $host ) ) {
+			if ( ( 'https' === $scheme || WPPS_Client::is_local_host( $host ) ) && $this->rest_host_allowed( $peer_id, $host ) ) {
 				$fields['rest_url'] = $rest_url;
 			}
 		}
 
 		$this->peers->update_peer( $peer_id, $fields );
+	}
+
+	/**
+	 * Whether a peer's rest_url may move to a host: always without Basic Auth
+	 * credentials; with them only when the host stays the stored one.
+	 *
+	 * @param string $peer_id Peer id.
+	 * @param string $host    Host of the new rest_url.
+	 * @return bool
+	 */
+	private function rest_host_allowed( $peer_id, $host ) {
+		$peer = $this->peers->get_peer( $peer_id );
+		if ( ! $peer || ! WPPS_Client::has_basic_auth( $peer ) ) {
+			return true;
+		}
+		$stored = (string) wp_parse_url( (string) $peer['rest_url'], PHP_URL_HOST );
+		return '' !== $host && strtolower( $stored ) === strtolower( $host );
 	}
 }

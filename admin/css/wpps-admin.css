@@ -53,6 +53,14 @@
 	flex-wrap: wrap;
 }
 
+.wpps-toolbar input[type="search"] {
+	min-width: 240px;
+}
+
+.wpps-filter-count {
+	color: #646970;
+}
+
 .wpps-bulkbar {
 	margin: 8px 0;
 }
@@ -142,6 +150,56 @@
 .wpps-modal-actions {
 	margin-bottom: 0;
 	text-align: right;
+}
+
+/*
+ * Status line of the sync modal, below the action row. As a block it can carry
+ * a full error message without squeezing the buttons, and the rule above it
+ * separates the result from the action that produced it.
+ *
+ * While empty it only loses its spacing, it is not hidden: an empty block box
+ * is zero pixels tall anyway, and display:none would drop the element out of
+ * the accessibility tree, which is exactly what makes an aria-live region stop
+ * announcing. The JS clears it with .text( '' ), so "no message" really is an
+ * empty element.
+ */
+.wpps-modal-status {
+	margin: 12px 0 0;
+	border-top: 1px solid #dcdcde;
+	padding-top: 12px;
+	word-break: break-word;
+}
+
+.wpps-modal-status:empty {
+	margin-top: 0;
+	border-top: 0;
+	padding-top: 0;
+}
+
+/* Editor notice (post.php), reusing the modal shell above */
+
+.wpps-editor-peers {
+	list-style: none;
+	margin: 0 0 16px;
+	padding: 0;
+}
+
+.wpps-editor-peer {
+	border-top: 1px solid #dcdcde;
+	margin-top: 12px;
+	padding-top: 12px;
+}
+
+.wpps-editor-peer:first-child {
+	border-top: 0;
+	margin-top: 0;
+	padding-top: 0;
+}
+
+.wpps-editor-peer-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
 }
 
 /* Verify report */

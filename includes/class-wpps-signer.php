@@ -124,7 +124,7 @@ class WPPS_Signer {
 
 		// DoS guard (security review): never sha256 an oversized body.
 		$body = $request->get_body();
-		if ( strlen( $body ) > WPPS_MAX_FILE_BYTES ) {
+		if ( strlen( $body ) > WPPS_MAX_BODY_BYTES ) {
 			return false;
 		}
 

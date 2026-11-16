@@ -306,7 +306,7 @@ class WPPS_Verifier {
 			if ( WPPS_Rewriter::bare_host( preg_match( '~^//~', $href ) ? 'http:' . $href : $href ) !== $own_host ) {
 				return null;
 			}
-			$href = (string) wp_parse_url( $href, PHP_URL_PATH );
+			$href = WPPS_Rewriter::url_path( $href );
 		}
 		if ( '' === $href || '/' !== $href[0] ) {
 			return null;

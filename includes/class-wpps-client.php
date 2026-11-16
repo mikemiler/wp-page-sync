@@ -18,7 +18,8 @@ class WPPS_Client {
 	/**
 	 * Sends a signed request to a peer and decodes the JSON response.
 	 *
-	 * @param array             $peer    Peer record (needs peer_id, secret, rest_url).
+	 * @param array             $peer    Peer record (needs peer_id, secret, rest_url;
+	 *                                   optional basic_auth_user/basic_auth_pass).
 	 * @param string            $method  HTTP method.
 	 * @param string            $route   REST route incl. namespace, e.g. /wp-page-sync/v1/info.
 	 * @param array             $query   Query args as key => value (raw values).
@@ -39,20 +40,27 @@ class WPPS_Client {
 	}
 
 	/**
-	 * Signed GET returning the raw response body (the /media-file route
-	 * answers with binary file content, not JSON).
+	 * Signed GET that streams the response body into a file (the
+	 * /media-file route answers with binary file content, not JSON), so a
+	 * large file never sits in memory. The body is capped at
+	 * WPPS_MAX_FILE_BYTES; a longer one arrives truncated and fails the
+	 * caller's sha256 check.
 	 *
 	 * @param array    $peer    Peer record.
 	 * @param string   $route   REST route incl. namespace.
 	 * @param array    $query   Query args as key => value.
+	 * @param string   $file    Absolute path of the file to write.
 	 * @param int|null $timeout Timeout in seconds.
-	 * @return array|WP_Error {body: string, sha256: string} on 200.
+	 * @return true|WP_Error True on 200; the file holds the body.
 	 */
-	public function download( array $peer, $route, array $query = array(), $timeout = null ) {
+	public function download_to_file( array $peer, $route, array $query, $file, $timeout = null ) {
 		$prepared = $this->prepare( $peer, 'GET', $route, $query, null, $timeout );
 		if ( is_wp_error( $prepared ) ) {
 			return $prepared;
 		}
+		$prepared['args']['stream']              = true;
+		$prepared['args']['filename']            = $file;
+		$prepared['args']['limit_response_size'] = WPPS_MAX_FILE_BYTES;
 
 		$response = $this->send( $prepared );
 		if ( is_wp_error( $response ) ) {
@@ -60,19 +68,17 @@ class WPPS_Client {
 		}
 
 		$code = (int) wp_remote_retrieve_response_code( $response );
-		if ( 200 !== $code ) {
-			$decoded = json_decode( wp_remote_retrieve_body( $response ), true );
-			if ( is_array( $decoded ) && ! empty( $decoded['message'] ) ) {
-				return new WP_Error( 'wpps_http_' . $code, (string) $decoded['message'] );
-			}
-			/* translators: %d: HTTP status code. */
-			return new WP_Error( 'wpps_http_' . $code, sprintf( __( 'Peer responded with HTTP %d.', 'wp-page-sync' ), $code ) );
+		if ( 200 === $code ) {
+			return true;
 		}
 
-		return array(
-			'body'   => (string) wp_remote_retrieve_body( $response ),
-			'sha256' => (string) wp_remote_retrieve_header( $response, 'x-wpps-sha256' ),
-		);
+		// An error answer is a small JSON document, streamed into the file as well.
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- reading the head of our own temp file.
+		$decoded = json_decode( (string) file_get_contents( $file, false, null, 0, 8192 ), true );
+		if ( is_array( $decoded ) && ! empty( $decoded['message'] ) ) {
+			return new WP_Error( 'wpps_http_' . $code, (string) $decoded['message'] );
+		}
+		return new WP_Error( 'wpps_http_' . $code, self::http_error_message( $code ) );
 	}
 
 	/**
@@ -135,6 +141,17 @@ class WPPS_Client {
 		if ( '' !== $body_string ) {
 			$args['headers']['Content-Type'] = $content_type;
 			$args['body']                    = $body_string;
+		}
+
+		/*
+		 * Optional HTTP Basic Auth of the peer's web server (a password
+		 * protected staging site). Only this peer's own credentials, only as a
+		 * header, and only after the HTTPS check above. The HMAC signature
+		 * covers X-WPPS-* headers only, so Authorization stays free.
+		 */
+		if ( self::has_basic_auth( $peer ) ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- RFC 7617 Basic Auth encoding, not obfuscation.
+			$args['headers']['Authorization'] = 'Basic ' . base64_encode( $peer['basic_auth_user'] . ':' . $peer['basic_auth_pass'] );
 		}
 
 		return array(
@@ -203,6 +220,18 @@ class WPPS_Client {
 	}
 
 	/**
+	 * Whether a peer record carries HTTP Basic Auth credentials (1.4.0).
+	 *
+	 * A username of "0" counts as set, so no empty() here.
+	 *
+	 * @param array $peer Peer record.
+	 * @return bool
+	 */
+	public static function has_basic_auth( array $peer ) {
+		return isset( $peer['basic_auth_user'], $peer['basic_auth_pass'] ) && '' !== (string) $peer['basic_auth_user'];
+	}
+
+	/**
 	 * Whether a host counts as local (plain HTTP allowed, plan §4.1).
 	 *
 	 * @param string $host Hostname.
@@ -213,7 +242,7 @@ class WPPS_Client {
 		if ( 'localhost' === $host || '127.0.0.1' === $host ) {
 			return true;
 		}
-		return (bool) preg_match( '/\.(test|local)$/', $host );
+		return (bool) preg_match( '/\.(test|local)$/D', $host );
 	}
 
 	/**
@@ -256,15 +285,39 @@ class WPPS_Client {
 		$decoded = json_decode( wp_remote_retrieve_body( $response ), true );
 
 		if ( $code < 200 || $code >= 300 ) {
-			if ( is_array( $decoded ) && ! empty( $decoded['message'] ) ) {
-				$message = (string) $decoded['message'];
-			} else {
-				/* translators: %d: HTTP status code. */
-				$message = sprintf( __( 'Peer responded with HTTP %d.', 'wp-page-sync' ), $code );
-			}
+			$message = ( is_array( $decoded ) && ! empty( $decoded['message'] ) )
+				? (string) $decoded['message']
+				: self::http_error_message( $code );
 			return new WP_Error( 'wpps_http_' . $code, $message );
 		}
 
 		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	/**
+	 * Message for an error answer without a JSON message of its own.
+	 *
+	 * A 401 without one comes from the peer's web server (HTTP Basic Auth),
+	 * not from this plugin, whose 401 always carries a JSON message. A 413
+	 * without one comes from the web server or a proxy in front of
+	 * WordPress, not from this plugin: its body-size limit is below one
+	 * request.
+	 *
+	 * @param int $code HTTP status code.
+	 * @return string
+	 */
+	private static function http_error_message( $code ) {
+		if ( 401 === $code ) {
+			return __( 'The other site asks for a login (HTTP 401): its web server is protected by HTTP Basic Auth, or the Basic Auth username and password are wrong. Create the connection key on the protected site and enter its Basic Auth username and password when connecting from the other site; to change them later, disconnect and connect again.', 'wp-page-sync' );
+		}
+		if ( 413 === $code ) {
+			return sprintf(
+				/* translators: %s: size of one upload piece, e.g. "1 MB". */
+				__( 'The request is too large for the receiving server (HTTP 413): its web server or proxy limits the request body size, for example nginx client_max_body_size. Files are sent in pieces of %s, so that limit must be at least this large.', 'wp-page-sync' ),
+				size_format( WPPS_CHUNK_BYTES )
+			);
+		}
+		/* translators: %d: HTTP status code. */
+		return sprintf( __( 'Peer responded with HTTP %d.', 'wp-page-sync' ), $code );
 	}
 }
