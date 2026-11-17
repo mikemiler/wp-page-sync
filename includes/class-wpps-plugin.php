@@ -66,13 +66,14 @@ final class WPPS_Plugin {
 		$this->peers  = new WPPS_Peers();
 		$this->client = new WPPS_Client();
 
-		$exporter = new WPPS_Exporter( $this->peers );
-		$importer = new WPPS_Importer( $exporter );
-		$globals  = new WPPS_Globals( $exporter, $importer );
-		$verifier = new WPPS_Verifier( $exporter, $globals );
-		$sync     = new WPPS_Sync( $this->peers, $this->client, $exporter, $importer, $globals );
+		$exporter   = new WPPS_Exporter( $this->peers );
+		$importer   = new WPPS_Importer( $exporter );
+		$globals    = new WPPS_Globals( $exporter, $importer );
+		$navigation = new WPPS_Navigation( $exporter, $importer );
+		$verifier   = new WPPS_Verifier( $exporter, $globals, $navigation );
+		$sync       = new WPPS_Sync( $this->peers, $this->client, $exporter, $importer, $globals, $navigation );
 
-		$this->rest = new WPPS_Rest( $this->peers, $exporter, $importer, $globals, $verifier );
+		$this->rest = new WPPS_Rest( $this->peers, $exporter, $importer, $globals, $verifier, $navigation );
 
 		add_action( 'rest_api_init', array( $this->rest, 'register_routes' ) );
 		// Registered at load time: core may resolve the current user before rest_api_init.

@@ -291,6 +291,8 @@ class WPPS_Exporter {
 	 * @return bool
 	 */
 	public static function is_denied_meta_key( $key ) {
+		// Case-insensitive: with WordPress' default _ci collations, MySQL matches meta keys regardless of case.
+		$key = strtolower( (string) $key );
 		if ( in_array( $key, self::META_DENY_EXACT, true ) ) {
 			return true;
 		}

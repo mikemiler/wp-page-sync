@@ -55,20 +55,29 @@ class WPPS_Rest {
 	private $verifier;
 
 	/**
+	 * Navigation unit (1.7.0).
+	 *
+	 * @var WPPS_Navigation
+	 */
+	private $navigation;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param WPPS_Peers    $peers    Peer store.
-	 * @param WPPS_Exporter $exporter Exporter.
-	 * @param WPPS_Importer $importer Importer.
-	 * @param WPPS_Globals  $globals  Globals service.
-	 * @param WPPS_Verifier $verifier Verifier.
+	 * @param WPPS_Peers      $peers      Peer store.
+	 * @param WPPS_Exporter   $exporter   Exporter.
+	 * @param WPPS_Importer   $importer   Importer.
+	 * @param WPPS_Globals    $globals    Globals service.
+	 * @param WPPS_Verifier   $verifier   Verifier.
+	 * @param WPPS_Navigation $navigation Navigation unit.
 	 */
-	public function __construct( WPPS_Peers $peers, WPPS_Exporter $exporter, WPPS_Importer $importer, WPPS_Globals $globals, WPPS_Verifier $verifier ) {
-		$this->peers    = $peers;
-		$this->exporter = $exporter;
-		$this->importer = $importer;
-		$this->globals  = $globals;
-		$this->verifier = $verifier;
+	public function __construct( WPPS_Peers $peers, WPPS_Exporter $exporter, WPPS_Importer $importer, WPPS_Globals $globals, WPPS_Verifier $verifier, WPPS_Navigation $navigation ) {
+		$this->peers      = $peers;
+		$this->exporter   = $exporter;
+		$this->importer   = $importer;
+		$this->globals    = $globals;
+		$this->verifier   = $verifier;
+		$this->navigation = $navigation;
 	}
 
 	/**
@@ -202,6 +211,26 @@ class WPPS_Rest {
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
 				'callback'            => array( $this, 'handle_import_globals' ),
+				'permission_callback' => array( $this, 'permission_peer_write' ),
+			)
+		);
+
+		register_rest_route(
+			WPPS_REST_NS,
+			'/navigation',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'handle_navigation' ),
+				'permission_callback' => array( $this, 'permission_peer' ),
+			)
+		);
+
+		register_rest_route(
+			WPPS_REST_NS,
+			'/import-navigation',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'handle_import_navigation' ),
 				'permission_callback' => array( $this, 'permission_peer_write' ),
 			)
 		);
@@ -701,8 +730,9 @@ class WPPS_Rest {
 
 		return rest_ensure_response(
 			array(
-				'items'        => $results,
-				'globals_hash' => $this->globals->hash(),
+				'items'           => $results,
+				'globals_hash'    => $this->globals->hash(),
+				'navigation_hash' => $this->navigation->hash(),
 			)
 		);
 	}
@@ -759,6 +789,53 @@ class WPPS_Rest {
 	 */
 	public function handle_globals( WP_REST_Request $request ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- REST callback signature.
 		return rest_ensure_response( $this->globals->export() );
+	}
+
+	/**
+	 * GET /navigation: the navigation bundle (1.7.0).
+	 *
+	 * @param WP_REST_Request $request Incoming request.
+	 * @return WP_REST_Response
+	 */
+	public function handle_navigation( WP_REST_Request $request ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.Found -- REST callback signature.
+		return rest_ensure_response( $this->navigation->export() );
+	}
+
+	/**
+	 * POST /import-navigation (W): menus, overlays, elements, items. The
+	 * import validates the whole bundle first and writes nothing on error.
+	 * With dry_run=1 it only reports what the import would say (validation
+	 * errors and warnings) and writes nothing: the sender's push preview.
+	 *
+	 * @param WP_REST_Request $request Incoming request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function handle_import_navigation( WP_REST_Request $request ) {
+		$bundle = $request->get_json_params();
+		if ( ! is_array( $bundle ) || ! isset( $bundle['menus'], $bundle['posts'] ) || ! is_array( $bundle['menus'] ) || ! is_array( $bundle['posts'] ) ) {
+			return new WP_Error( 'wpps_invalid_bundle', __( 'Invalid navigation bundle.', 'wp-page-sync' ), array( 'status' => 400 ) );
+		}
+
+		$query = $request->get_query_params();
+		if ( isset( $query['dry_run'] ) && '1' === $query['dry_run'] ) {
+			return rest_ensure_response( $this->navigation->dry_run( $bundle ) );
+		}
+
+		$result = $this->navigation->import( $bundle );
+		if ( is_wp_error( $result ) ) {
+			$data = $result->get_error_data();
+			if ( is_array( $data ) && ! empty( $data['wpps_written'] ) ) {
+				/* translators: 1: peer name or id, 2: error message. */
+				WPPS_Log::add( 'error', sprintf( __( 'Navigation import from peer %1$s stopped after a partial write: %2$s', 'wp-page-sync' ), $this->peer_label( $request ), $result->get_error_message() ) );
+			}
+			return $result;
+		}
+		if ( ! empty( $result['written'] ) ) {
+			/* translators: %s: peer name or id. */
+			WPPS_Log::add( 'navigation_import', sprintf( __( 'Navigation imported from peer %s.', 'wp-page-sync' ), $this->peer_label( $request ) ), $result['warnings'] );
+		}
+
+		return rest_ensure_response( $result );
 	}
 
 	/**

@@ -61,20 +61,29 @@ class WPPS_Sync {
 	private $globals;
 
 	/**
+	 * Navigation unit (1.7.0).
+	 *
+	 * @var WPPS_Navigation
+	 */
+	private $navigation;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param WPPS_Peers    $peers    Peer store.
-	 * @param WPPS_Client   $client   Signed HTTP client.
-	 * @param WPPS_Exporter $exporter Exporter.
-	 * @param WPPS_Importer $importer Importer.
-	 * @param WPPS_Globals  $globals  Globals service.
+	 * @param WPPS_Peers      $peers      Peer store.
+	 * @param WPPS_Client     $client     Signed HTTP client.
+	 * @param WPPS_Exporter   $exporter   Exporter.
+	 * @param WPPS_Importer   $importer   Importer.
+	 * @param WPPS_Globals    $globals    Globals service.
+	 * @param WPPS_Navigation $navigation Navigation unit.
 	 */
-	public function __construct( WPPS_Peers $peers, WPPS_Client $client, WPPS_Exporter $exporter, WPPS_Importer $importer, WPPS_Globals $globals ) {
-		$this->peers    = $peers;
-		$this->client   = $client;
-		$this->exporter = $exporter;
-		$this->importer = $importer;
-		$this->globals  = $globals;
+	public function __construct( WPPS_Peers $peers, WPPS_Client $client, WPPS_Exporter $exporter, WPPS_Importer $importer, WPPS_Globals $globals, WPPS_Navigation $navigation ) {
+		$this->peers      = $peers;
+		$this->client     = $client;
+		$this->exporter   = $exporter;
+		$this->importer   = $importer;
+		$this->globals    = $globals;
+		$this->navigation = $navigation;
 	}
 
 	/**
@@ -182,10 +191,42 @@ class WPPS_Sync {
 		 * without syncable posts. One empty chunk keeps the call (and with it
 		 * the globals comparison) independent of the post list.
 		 */
-		$chunks = $lookup ? array_chunk( $lookup, 200 ) : array( array() );
+		$peer_status = $this->peer_status( $peer, $lookup ? array_chunk( $lookup, 200 ) : array( array() ) );
+		if ( is_wp_error( $peer_status ) ) {
+			return $peer_status;
+		}
 
-		$peer_map     = array();
-		$peer_globals = '';
+		$items = array();
+		foreach ( $local['items'] as $item ) {
+			$items[] = $this->status_row( $item, $peer_status['map'], $peer );
+		}
+
+		$local_globals = $this->globals->hash();
+
+		return array(
+			'items'      => $items,
+			'globals'    => array(
+				'local_hash' => $local_globals,
+				'peer_hash'  => $peer_status['globals'],
+				'in_sync'    => '' !== $peer_status['globals'] && $peer_status['globals'] === $local_globals,
+			),
+			'navigation' => $this->navigation_status( $peer_status['navigation'] ),
+		);
+	}
+
+	/**
+	 * The peer's /status answers for chunks of {post_type, path} lookups.
+	 *
+	 * @param array   $peer   Peer record.
+	 * @param array[] $chunks Lookup chunks (at least one, possibly empty).
+	 * @return array|WP_Error {map: path => item, globals: string, navigation: string|null}
+	 */
+	private function peer_status( array $peer, array $chunks ) {
+		$status = array(
+			'map'        => array(),
+			'globals'    => '',
+			'navigation' => null,
+		);
 		foreach ( $chunks as $chunk ) {
 			$response = $this->client->request( $peer, 'POST', '/' . WPPS_REST_NS . '/status', array(), array( 'items' => $chunk ) );
 			if ( is_wp_error( $response ) ) {
@@ -193,28 +234,36 @@ class WPPS_Sync {
 			}
 			foreach ( ( isset( $response['items'] ) && is_array( $response['items'] ) ) ? $response['items'] : array() as $peer_item ) {
 				if ( isset( $peer_item['path'] ) ) {
-					$peer_map[ (string) $peer_item['path'] ] = $peer_item;
+					$status['map'][ (string) $peer_item['path'] ] = $peer_item;
 				}
 			}
 			if ( isset( $response['globals_hash'] ) ) {
-				$peer_globals = (string) $response['globals_hash'];
+				$status['globals'] = (string) $response['globals_hash'];
+			}
+			if ( isset( $response['navigation_hash'] ) ) {
+				$status['navigation'] = (string) $response['navigation_hash'];
 			}
 		}
+		return $status;
+	}
 
-		$items = array();
-		foreach ( $local['items'] as $item ) {
-			$items[] = $this->status_row( $item, $peer_map, $peer );
+	/**
+	 * Navigation chip: in_sync, differs, or unknown when the peer sends no
+	 * navigation hash (a peer before 1.7.0).
+	 *
+	 * @param string|null $peer_hash Peer navigation hash.
+	 * @return array {local_hash, peer_hash, status}
+	 */
+	private function navigation_status( $peer_hash ) {
+		$local_hash = $this->navigation->hash();
+		$status     = 'unknown';
+		if ( null !== $peer_hash ) {
+			$status = ( $peer_hash === $local_hash ) ? 'in_sync' : 'differs';
 		}
-
-		$local_globals = $this->globals->hash();
-
 		return array(
-			'items'   => $items,
-			'globals' => array(
-				'local_hash' => $local_globals,
-				'peer_hash'  => $peer_globals,
-				'in_sync'    => '' !== $peer_globals && $peer_globals === $local_globals,
-			),
+			'local_hash' => $local_hash,
+			'peer_hash'  => (string) $peer_hash,
+			'status'     => $status,
 		);
 	}
 
@@ -607,6 +656,149 @@ class WPPS_Sync {
 		WPPS_Log::add( 'globals_pull', sprintf( __( 'Pulled global styles from %s.', 'wp-page-sync' ), $peer['name'] ), $result['warnings'] );
 
 		return $result;
+	}
+
+	/**
+	 * Navigation preview (1.7.0): what a push or pull would change, media,
+	 * and the receiver's pre-flight. Status is in_sync / differs only; the
+	 * preview plus an explicit Confirm is the protection.
+	 *
+	 * @param array  $peer      Peer record.
+	 * @param string $direction push|pull.
+	 * @return array|WP_Error
+	 */
+	public function navigation_preview( array $peer, $direction ) {
+		$local       = $this->navigation->export();
+		$peer_bundle = $this->fetch_navigation_bundle( $peer );
+		if ( is_wp_error( $peer_bundle ) ) {
+			return $peer_bundle;
+		}
+		$from  = ( 'push' === $direction ) ? $local : $peer_bundle;
+		$to    = ( 'push' === $direction ) ? $peer_bundle : $local;
+		$media = ( 'push' === $direction ) ? $this->peer_media_diff( $peer, $local['media_manifest'] ) : $this->local_media_diff( $peer_bundle['media_manifest'] );
+		if ( is_wp_error( $media ) ) {
+			return $media;
+		}
+		$checks = $this->navigation_checks( $peer, $from, $direction );
+		if ( is_wp_error( $checks ) ) {
+			return $checks;
+		}
+
+		return array_merge(
+			WPPS_Navigation::diff( $from, $to ),
+			array(
+				'direction' => $direction,
+				'media'     => $media,
+				'in_sync'   => (string) $from['hash'] === (string) $to['hash'],
+				'preflight' => array(
+					'errors'   => array_values( array_unique( array_merge( $from['preflight']['errors'], $checks['errors'] ) ) ),
+					'warnings' => array_values( array_unique( array_merge( $from['preflight']['warnings'], $checks['warnings'] ) ) ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Receiver checks of a navigation sync: the receiver's own dry run of
+	 * the import (validation + warnings, no writes), locally for a pull and
+	 * through /import-navigation?dry_run=1 for a push, so both previews
+	 * apply exactly the checks the import will.
+	 *
+	 * @param array  $peer      Peer record.
+	 * @param array  $from      Sending bundle.
+	 * @param string $direction push|pull.
+	 * @return array|WP_Error {errors, warnings}
+	 */
+	private function navigation_checks( array $peer, array $from, $direction ) {
+		if ( 'pull' === $direction ) {
+			return $this->navigation->dry_run( $from );
+		}
+		$result = self::outdated_peer( $this->client->request( $peer, 'POST', '/' . WPPS_REST_NS . '/import-navigation', array( 'dry_run' => '1' ), $from, WPPS_TIMEOUT_MEDIA ) );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+		return array(
+			'errors'   => $this->merge_warnings( array(), array( 'warnings' => $result['errors'] ?? array() ) ),
+			'warnings' => $this->merge_warnings( array(), $result ),
+		);
+	}
+
+	/**
+	 * Executes a navigation push or pull (1.7.0).
+	 *
+	 * @param array  $peer      Peer record.
+	 * @param string $direction push|pull.
+	 * @return array|WP_Error Import result.
+	 */
+	public function navigation_sync( array $peer, $direction ) {
+		$bundle = ( 'push' === $direction ) ? $this->navigation->export() : $this->fetch_navigation_bundle( $peer );
+		if ( is_wp_error( $bundle ) ) {
+			return $bundle;
+		}
+		if ( ! empty( $bundle['preflight']['errors'] ) ) {
+			return new WP_Error( 'wpps_preflight', implode( ' ', $bundle['preflight']['errors'] ) );
+		}
+
+		$media = ( 'push' === $direction ) ? $this->transfer_media_to_peer( $peer, $bundle['media_manifest'] ) : $this->fetch_media_from_peer( $peer, $bundle['media_manifest'] );
+		if ( is_wp_error( $media ) ) {
+			return $this->log_failure( 'navigation_' . $direction, 'navigation', $peer, $media );
+		}
+		$result = ( 'push' === $direction )
+			? self::outdated_peer( $this->client->request( $peer, 'POST', '/' . WPPS_REST_NS . '/import-navigation', array(), $bundle, WPPS_TIMEOUT_MEDIA ) )
+			: $this->navigation->import( $bundle );
+		if ( is_wp_error( $result ) ) {
+			return $this->log_failure( 'navigation_' . $direction, 'navigation', $peer, $result );
+		}
+
+		$result['warnings'] = $this->merge_warnings( $media['warnings'], $result );
+		$message            = ( 'push' === $direction )
+			/* translators: %s: peer name. */
+			? sprintf( __( 'Pushed the navigation to %s.', 'wp-page-sync' ), $peer['name'] )
+			/* translators: %s: peer name. */
+			: sprintf( __( 'Pulled the navigation from %s.', 'wp-page-sync' ), $peer['name'] );
+		if ( ! empty( $result['written'] ) ) {
+			// Logged whenever the receiver's write phase ran (skipped only by the hash shortcut).
+			WPPS_Log::add( 'navigation_' . $direction, $message, $result['warnings'] );
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Fetches and minimally validates the peer's navigation bundle.
+	 *
+	 * @param array $peer Peer record.
+	 * @return array|WP_Error
+	 */
+	private function fetch_navigation_bundle( array $peer ) {
+		$bundle = self::outdated_peer( $this->client->request( $peer, 'GET', '/' . WPPS_REST_NS . '/navigation', array(), null, WPPS_TIMEOUT_MEDIA ) );
+		if ( is_wp_error( $bundle ) ) {
+			return $bundle;
+		}
+		if ( ! isset( $bundle['menus'], $bundle['posts'], $bundle['hash'] ) || ! is_array( $bundle['menus'] ) || ! is_array( $bundle['posts'] ) ) {
+			return new WP_Error( 'wpps_invalid_bundle', __( 'The peer returned an invalid navigation bundle.', 'wp-page-sync' ) );
+		}
+		$bundle['media_manifest'] = ( isset( $bundle['media_manifest'] ) && is_array( $bundle['media_manifest'] ) ) ? $bundle['media_manifest'] : array();
+		$preflight                = ( isset( $bundle['preflight'] ) && is_array( $bundle['preflight'] ) ) ? $bundle['preflight'] : array();
+		$bundle['preflight']      = array(
+			'errors'   => array_merge( ( isset( $preflight['errors'] ) && is_array( $preflight['errors'] ) ) ? $preflight['errors'] : array(), $this->oversize_errors( $bundle['media_manifest'] ) ),
+			'warnings' => ( isset( $preflight['warnings'] ) && is_array( $preflight['warnings'] ) ) ? $preflight['warnings'] : array(),
+		);
+		return $bundle;
+	}
+
+	/**
+	 * Turns the 404 of a peer before 1.7.0 (no navigation routes) into an
+	 * actionable message.
+	 *
+	 * @param array|WP_Error $response Peer response.
+	 * @return array|WP_Error
+	 */
+	private static function outdated_peer( $response ) {
+		if ( is_wp_error( $response ) && 'wpps_http_404' === $response->get_error_code() ) {
+			return new WP_Error( 'wpps_peer_outdated', __( 'The connected site does not offer the navigation sync yet. Update WP Page Sync there to 1.7.0 or later.', 'wp-page-sync' ) );
+		}
+		return $response;
 	}
 
 	/**

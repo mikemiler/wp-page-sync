@@ -28,6 +28,17 @@ in both directions, including the upload files they reference.
   site's own attachment IDs.
 - Syncs GenerateBlocks Pro global classes and the GeneratePress color palette.
   Classes that exist only on the target are never deleted.
+- Syncs the navigation as one unit (1.7.0): GP Premium block elements that show
+  a GenerateBlocks Pro classic menu (header, footer), those menus, and the mega
+  menu overlays their items open. Menu IDs, mega menu assignments and
+  page-specific element rules are translated to the receiving site's IDs;
+  linked pages must already exist there, published. Only header, footer and
+  header/navigation/footer-hook block elements and mega menu overlays travel;
+  "Execute PHP", custom hooks and unsafe HTML are refused, and an existing
+  element, overlay or menu outside the receiving site's own navigation is never
+  replaced. External scripts (for example a footer form embed) travel only from
+  hosts the receiving site allows in `wp-config.php`:
+  `define( 'WPPS_NAV_SCRIPT_HOSTS', array( 'webchangedetector90145.activehosted.com' ) );`
 - Detects conflicts via content hashes: two copies that differ are reported
   instead of overwritten, and overwriting needs an explicit confirmation.
 - Warns in the editor when the connected site holds a newer copy of the post
@@ -51,6 +62,24 @@ in both directions, including the upload files they reference.
   warning before the sync and the verifier reports the leftover URL after it.
   A reference written without a host (`/wp-content/uploads/…` instead of a full
   URL) is not extracted at all, so its file is neither transferred nor reported.
+- **Navigation: a synced menu is replaced as a whole.** Items that only the
+  target's copy of that menu has are removed; whole menus, overlays and
+  elements that only the target has are kept. Menus have no backup (overlays
+  and elements get a post revision). Menu items that link to a category or tag,
+  display conditions on menu items and overlays, and element rules for a
+  category or tag are not supported and block the sync. Target-only menus,
+  overlays and elements keep the navigation status at "differs". Menu items with
+  If Menu visibility rules block the sync. Overlays and elements need lowercase
+  meta keys (a mixed-case key from another plugin blocks that post) and no
+  password. Stored HTML that is incomplete, has ambiguous block comments, or
+  holds blocked tags (iframe, object, embed, base, meta, frame, link, style,
+  noscript, xmp, noembed, noframes, plaintext, textarea, SVG animation), a
+  title with markup, inline event handlers, disallowed URL schemes or scripts
+  other than plain external https scripts from `WPPS_NAV_SCRIPT_HOSTS` is
+  refused, also as a last check right before each post is written. This check
+  is hardening, not a guarantee: the real security boundary is which sites you
+  pair with and when "Allow incoming" is enabled (on production, enable it only
+  while pushing).
 - **"Never deleted" covers global classes only.** The GeneratePress color
   palette is replaced as a whole rather than merged, so colors that exist only
   on the target are lost.
@@ -110,7 +139,7 @@ Release steps are documented in [RELEASING.md](RELEASING.md).
 
 ## Requirements
 
-- WordPress 6.0 or newer
+- WordPress 6.5 or newer (the navigation sync uses the HTML API of 6.5)
 - PHP 7.4 or newer
 - GenerateBlocks Pro / GeneratePress on both sites, for the global styles sync
   only. Page and post syncing does not require them.

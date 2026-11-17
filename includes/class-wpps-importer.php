@@ -735,13 +735,26 @@ class WPPS_Importer {
 	/**
 	 * Upserts a post bundle (plan §6.5). Media must already be present.
 	 *
-	 * @param array $bundle Export bundle (plan §5 shape).
+	 * @param array         $bundle     Export bundle (plan §5 shape).
+	 * @param string[]      $post_types Post types this call may write. The
+	 *                                  /import-post route keeps the default (pages
+	 *                                  and posts); the navigation import passes
+	 *                                  the overlay or element type (1.7.0).
+	 * @param callable|null $guard      Optional final check (1.7.0): receives the
+	 *                                  final content, title and excerpt right before
+	 *                                  the write and returns error strings; any error
+	 *                                  aborts this post with nothing written.
 	 * @return array|WP_Error {id, url, hash, warnings[]}.
 	 */
-	public function import_post( array $bundle ) {
-		$post = $this->validate_bundle_post( $bundle );
+	public function import_post( array $bundle, array $post_types = WPPS_Exporter::SYNCABLE_POST_TYPES, ?callable $guard = null ) {
+		$post = $this->validate_bundle_post( $bundle, $post_types );
 		if ( is_wp_error( $post ) ) {
 			return $post;
+		}
+		$raw_meta = ( isset( $bundle['meta'] ) && is_array( $bundle['meta'] ) ) ? $bundle['meta'] : array();
+		if ( count( array_change_key_case( $raw_meta, CASE_LOWER ) ) !== count( $raw_meta ) ) {
+			// Keys like _Wp_Page_Template would slip past the denylist and shadow the real key.
+			return new WP_Error( 'wpps_invalid_bundle', __( 'The bundle contains meta keys that differ only in letter case.', 'wp-page-sync' ), array( 'status' => 400 ) );
 		}
 
 		$source_host = isset( $bundle['source']['home_url'] ) ? WPPS_Rewriter::bare_host( (string) $bundle['source']['home_url'] ) : '';
@@ -758,6 +771,11 @@ class WPPS_Importer {
 		$content = WPPS_Rewriter::rewrite_attachment_ids( $rewrite( $post['content'] ), $media['ids'] );
 		$excerpt = $rewrite( $post['excerpt'] );
 		$meta    = WPPS_Rewriter::apply_recursive( $this->validate_bundle_meta( $bundle ), $rewrite );
+
+		$refused = $guard ? (array) call_user_func( $guard, $content, $post['title'], $excerpt ) : array();
+		if ( $refused ) {
+			return new WP_Error( 'wpps_preflight', implode( ' ', $refused ), array( 'status' => 400 ) );
+		}
 
 		$post_id = $this->upsert_post( $post, $content, $excerpt, $warnings );
 		if ( is_wp_error( $post_id ) ) {
@@ -782,17 +800,18 @@ class WPPS_Importer {
 	/**
 	 * Validates and normalizes the bundle's post block.
 	 *
-	 * @param array $bundle Bundle.
+	 * @param array    $bundle     Bundle.
+	 * @param string[] $post_types Allowed post types.
 	 * @return array|WP_Error Normalized post fields.
 	 */
-	private function validate_bundle_post( array $bundle ) {
+	private function validate_bundle_post( array $bundle, array $post_types ) {
 		$post    = ( isset( $bundle['post'] ) && is_array( $bundle['post'] ) ) ? $bundle['post'] : array();
 		$invalid = new WP_Error( 'wpps_invalid_bundle', __( 'Invalid post bundle.', 'wp-page-sync' ), array( 'status' => 400 ) );
 
 		$post_type = isset( $post['post_type'] ) ? (string) $post['post_type'] : '';
 		$path      = isset( $post['path'] ) ? (string) $post['path'] : '';
 		$slug      = isset( $post['slug'] ) ? sanitize_title( (string) $post['slug'] ) : '';
-		if ( ! in_array( $post_type, WPPS_Exporter::SYNCABLE_POST_TYPES, true ) || '' === $slug || ! self::validate_post_path( $path ) ) {
+		if ( ! in_array( $post_type, $post_types, true ) || '' === $slug || ! self::validate_post_path( $path ) ) {
 			return $invalid;
 		}
 

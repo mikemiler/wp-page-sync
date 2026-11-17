@@ -1,10 +1,10 @@
 === WP Page Sync ===
 Contributors: wpmike
 Tags: sync, migration, staging, media, generateblocks
-Requires at least: 6.0
+Requires at least: 6.5
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.6.0
+Stable tag: 1.7.0
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -64,6 +64,51 @@ or changed on both. A conflict is reported instead of silently overwritten, and
 overwriting requires an explicit confirmation. Post meta is not part of that
 hash: two copies can be reported as in sync while their custom fields differ,
 and meta deleted on the source is not deleted on the target by an import.
+
+The navigation can be pushed or pulled as one unit from its own card in the
+Sync tab: the GP Premium block elements (header, footer) that show a
+GenerateBlocks Pro classic menu, the menus they show, and the mega menu
+overlays those menus open. Menus are matched by slug, overlays and elements by
+slug, and the pages the menu items link to by path; the pages themselves are
+not part of the unit and must exist, published, on the receiving site. A synced
+menu is replaced as a whole; menus,
+overlays and elements that only the receiving site has are never deleted, and
+because they are part of that site's navigation, its status then stays
+"differs" after a sync. The status is "in sync" or "differs", and the preview
+lists what a sync would add, remove or change before anything is written; for a
+push, the receiving site checks the bundle itself first without writing. Overlays
+and elements keep a post revision of their previous version; menus are not
+backed up. Menu items that link to a category or tag, menu items with If Menu
+visibility rules, menu items and overlays with a display condition, and element
+display rules for a category or tag are not supported and block the sync. Only
+published posts of a strict kind travel: GP block elements that show a classic
+menu and render as site header, site footer or on one of GeneratePress'
+header, navigation or footer hooks, and mega menu overlays without a display
+condition. Their meta keys must all be lowercase: a mixed-case key, for example
+from another plugin, blocks that post's sync. Elements with GP Premium's
+"Execute PHP" setting, a custom hook, a parent or a password are refused, and
+so is any element, overlay or menu item text whose stored HTML is incomplete,
+has block comments the HTML parser does not see as comments, or holds an
+iframe, object, embed, base, meta, frame, link, style, noscript, xmp, noembed,
+noframes, plaintext, textarea or SVG animation tag, a title with markup, an
+inline event handler or a URL with a scheme WordPress does not allow (such as
+javascript:). Scripts are refused too, except an external https script (no
+inline code, only src, async, defer, id, type, charset, crossorigin and data-*
+attributes, no port or user part in the URL) from a host the RECEIVING site
+lists in its wp-config.php, for example a newsletter form embed in the footer:
+
+    define( 'WPPS_NAV_SCRIPT_HOSTS', array( 'webchangedetector90145.activehosted.com' ) );
+
+Without that constant no script travels. The HTML check is hardening, not a
+guarantee: the real security boundary is which sites you pair with and when
+"Allow incoming" is enabled, so on a production site enable it only while you
+push to it. An existing element, overlay or menu
+of the same name on the receiving site that is not part of its navigation (a
+tracking-code hook, for example) is never replaced. The sync is capped at 20
+menus, 300 items per menu, 20 overlays and elements, 512 KB of content and 100
+meta keys per overlay or element, 64 KB per meta value and 50 display rules per
+element. A sync onto an identical navigation writes nothing and clears no
+cache.
 
 Opening an existing page or post for editing checks the connected site in the
 background. If the copy there is newer, a notice offers to pull it and reload
@@ -126,6 +171,15 @@ Updates are delivered via GitHub, not wordpress.org.
    unaffected.
 
 == Changelog ==
+
+= 1.7.0 =
+* New: a "Navigation" card in the Sync tab pushes or pulls the site navigation as one unit: the GP Premium block elements that show a GenerateBlocks Pro classic menu (header, footer), those menus with all their items, and the mega menu overlays the items open. The preview lists new and changed menus with the items added and removed, new and changed overlays with their link changes, new and changed elements, and what only the receiving site has (kept, never deleted). It blocks the sync when a menu item links to a page that does not exist or is not published on the receiving site, and warns when the GenerateBlocks Pro versions differ or a mega menu links to a missing page. Menu IDs inside the elements, the mega menu assignments and page-specific element display rules are translated to the receiving site's own IDs; overlay and LiteSpeed caches are cleared afterwards.
+* New: the Verify tab also checks the navigation: classic menu blocks that show a missing menu, menu items that link to a missing or unpublished page, and mega menus that open a missing, unpublished or non-mega-menu overlay.
+* Security: the navigation sync carries only published GP block elements that show a classic menu as site header, site footer or on a GeneratePress header, navigation or footer hook, and published mega menu overlays without a display condition. "Execute PHP", custom hooks, parents, passwords, titles with markup and stored HTML that is incomplete, has ambiguous block comments, unsafe tags, event handlers or disallowed URL schemes are refused (checked again on the final content right before it is written); scripts only from hosts the receiving site lists in WPPS_NAV_SCRIPT_HOSTS; existing elements, overlays and menus outside the receiving site's own navigation are never replaced; menu items carry no extra data.
+* Security: post bundles (all syncs) whose meta keys differ only in letter case are refused, and the meta denylist ignores letter case.
+* Note: menus, overlays and elements that only the receiving site has keep its navigation status at "differs".
+* Note: WP Page Sync now requires WordPress 6.5 (the navigation sync uses its HTML API).
+* Note: update both sites to 1.7.0. A site before 1.7.0 has no navigation sync; the card then asks for the update. A push preview needs "Allow incoming" on the receiving site, because it asks that site to check the bundle.
 
 = 1.6.0 =
 * New: in the Sync tab, the title of each post links to the page on this site (its preview while it is not published), and "Edit" and "View on peer" links below it open the editor here and the published page on the connected site, each in a new tab. "View on peer" also appears in the list of posts that exist only on the peer. It needs the connected site to run 1.6.0 and appears only for posts published there.
