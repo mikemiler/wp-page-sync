@@ -40,14 +40,23 @@ class WPPS_Verifier {
 	private $globals;
 
 	/**
+	 * Navigation unit (1.7.0).
+	 *
+	 * @var WPPS_Navigation
+	 */
+	private $navigation;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param WPPS_Exporter $exporter Exporter.
-	 * @param WPPS_Globals  $globals  Globals service.
+	 * @param WPPS_Exporter   $exporter   Exporter.
+	 * @param WPPS_Globals    $globals    Globals service.
+	 * @param WPPS_Navigation $navigation Navigation unit.
 	 */
-	public function __construct( WPPS_Exporter $exporter, WPPS_Globals $globals ) {
-		$this->exporter = $exporter;
-		$this->globals  = $globals;
+	public function __construct( WPPS_Exporter $exporter, WPPS_Globals $globals, WPPS_Navigation $navigation ) {
+		$this->exporter   = $exporter;
+		$this->globals    = $globals;
+		$this->navigation = $navigation;
 	}
 
 	/**
@@ -76,6 +85,14 @@ class WPPS_Verifier {
 
 		foreach ( $query->posts as $post ) {
 			$this->verify_post( $post, $context, $errors, $warnings );
+		}
+
+		if ( 0 === (int) $offset ) {
+			// The navigation unit is checked once per run, with the first batch.
+			foreach ( $this->navigation->nav_posts() as $nav_post ) {
+				$this->verify_post( $nav_post, $context, $errors, $warnings );
+			}
+			$errors = array_merge( $errors, $this->navigation->problems() );
 		}
 
 		if ( 0 === (int) $offset && 1 === (int) get_option( 'use_balanceTags' ) ) {
@@ -267,7 +284,7 @@ class WPPS_Verifier {
 
 		$seen = array();
 		foreach ( $matches[2] as $href ) {
-			$target = $this->internal_link_path( $href, $context['own_host'] );
+			$target = self::internal_link_path( $href, $context['own_host'] );
 			if ( null === $target || '' === $target || isset( $seen[ $target ] ) ) {
 				continue;
 			}
@@ -290,13 +307,14 @@ class WPPS_Verifier {
 
 	/**
 	 * Extracts the lookup path of an internal href, or null for links the
-	 * check does not cover (external, anchors, uploads, wp paths).
+	 * check does not cover (external, anchors, uploads, wp paths). Also used
+	 * by the navigation preview for links in mega-menu overlays.
 	 *
 	 * @param string $href     Href value.
 	 * @param string $own_host Own bare host.
 	 * @return string|null
 	 */
-	private function internal_link_path( $href, $own_host ) {
+	public static function internal_link_path( $href, $own_host ) {
 		$href = html_entity_decode( (string) $href, ENT_QUOTES );
 		if ( '' === $href || preg_match( '/^(#|mailto:|tel:|javascript:)/i', $href ) ) {
 			return null;

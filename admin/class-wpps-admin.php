@@ -82,6 +82,8 @@ class WPPS_Admin {
 		add_action( 'wp_ajax_wpps_pull', array( $this, 'ajax_pull' ) );
 		add_action( 'wp_ajax_wpps_globals_preview', array( $this, 'ajax_globals_preview' ) );
 		add_action( 'wp_ajax_wpps_globals_sync', array( $this, 'ajax_globals_sync' ) );
+		add_action( 'wp_ajax_wpps_nav_preview', array( $this, 'ajax_nav_preview' ) );
+		add_action( 'wp_ajax_wpps_nav_sync', array( $this, 'ajax_nav_sync' ) );
 		add_action( 'wp_ajax_wpps_verify', array( $this, 'ajax_verify' ) );
 		add_action( 'wp_ajax_wpps_get_log', array( $this, 'ajax_get_log' ) );
 		add_action( 'wp_ajax_wpps_editor_check', array( $this, 'ajax_editor_check' ) );
@@ -212,6 +214,11 @@ class WPPS_Admin {
 					'globalsInSync'     => __( 'Global styles are in sync.', 'wp-page-sync' ),
 					'globalsDiffer'     => __( 'Global styles differ.', 'wp-page-sync' ),
 					'globalsUnknown'    => __( 'Load the status to compare global styles.', 'wp-page-sync' ),
+					'navInSync'         => __( 'Navigation is in sync.', 'wp-page-sync' ),
+					'navDiffer'         => __( 'Navigation differs.', 'wp-page-sync' ),
+					'navUnknown'        => __( 'Load the status to compare the navigation (needs 1.7.0 on both sites).', 'wp-page-sync' ),
+					'navTitle'          => __( 'Navigation', 'wp-page-sync' ),
+					'navOnlyTarget'     => __( 'Only on target (kept, never deleted)', 'wp-page-sync' ),
 					'verifyRunning'     => __( 'Verifying…', 'wp-page-sync' ),
 					'verifyClean'       => __( 'No problems found.', 'wp-page-sync' ),
 					'verifyErrors'      => __( 'Errors', 'wp-page-sync' ),
@@ -685,6 +692,31 @@ class WPPS_Admin {
 		wpps_raise_limits();
 
 		$this->send_result( $this->sync->globals_sync( $this->posted_peer(), $this->posted_direction() ) );
+	}
+
+	/**
+	 * AJAX: navigation preview (1.7.0).
+	 *
+	 * @return void
+	 */
+	public function ajax_nav_preview() {
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		$this->require_admin();
+
+		$this->send_result( $this->sync->navigation_preview( $this->posted_peer(), $this->posted_direction() ) );
+	}
+
+	/**
+	 * AJAX: navigation push or pull (1.7.0).
+	 *
+	 * @return void
+	 */
+	public function ajax_nav_sync() {
+		check_ajax_referer( self::NONCE_ACTION, 'nonce' );
+		$this->require_admin();
+		wpps_raise_limits();
+
+		$this->send_result( $this->sync->navigation_sync( $this->posted_peer(), $this->posted_direction() ) );
 	}
 
 	/**

@@ -24,7 +24,7 @@
 	<rule ref="WordPress-Extra"/>
 
 	<!-- PHP 7.4+ compatibility, targeting the plugin's minimum WP version. -->
-	<config name="minimum_wp_version" value="6.0"/>
+	<config name="minimum_wp_version" value="6.5"/>
 	<rule ref="PHPCompatibilityWP"/>
 	<config name="testVersion" value="7.4-"/>
 

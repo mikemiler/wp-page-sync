@@ -39,6 +39,17 @@ defined( 'ABSPATH' ) || exit;
 		</p>
 	</div>
 
+	<div class="card wpps-card" id="wpps-nav-card">
+		<h2><?php esc_html_e( 'Navigation', 'wp-page-sync' ); ?></h2>
+		<p><?php esc_html_e( 'The menus shown by header and footer elements, their mega menu overlays, and those elements. A synced menu is replaced as a whole; menus, overlays and elements that only the target has are never deleted. The linked pages are not part of it and must exist, published, on the target.', 'wp-page-sync' ); ?></p>
+		<p>
+			<span id="wpps-nav-chip" class="wpps-badge wpps-badge-unknown"><?php esc_html_e( 'Unknown', 'wp-page-sync' ); ?></span>
+			<button type="button" class="button wpps-nav-preview" data-direction="push"><?php esc_html_e( 'Push…', 'wp-page-sync' ); ?></button>
+			<button type="button" class="button wpps-nav-preview" data-direction="pull"><?php esc_html_e( 'Pull…', 'wp-page-sync' ); ?></button>
+			<span id="wpps-nav-feedback" class="wpps-feedback"></span>
+		</p>
+	</div>
+
 	<h2><?php esc_html_e( 'Posts on this site', 'wp-page-sync' ); ?></h2>
 	<div class="wpps-toolbar">
 		<label for="wpps-filter-status"><?php esc_html_e( 'Status', 'wp-page-sync' ); ?></label>

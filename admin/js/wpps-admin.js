@@ -64,6 +64,11 @@
 		globalsInSync: 'Global styles are in sync.',
 		globalsDiffer: 'Global styles differ.',
 		globalsUnknown: 'Load the status to compare global styles.',
+		navInSync: 'Navigation is in sync.',
+		navDiffer: 'Navigation differs.',
+		navUnknown: 'Load the status to compare the navigation (needs 1.7.0 on both sites).',
+		navTitle: 'Navigation',
+		navOnlyTarget: 'Only on target (kept, never deleted)',
 		verifyRunning: 'Verifying…',
 		verifyClean: 'No problems found.',
 		verifyErrors: 'Errors',
@@ -618,6 +623,20 @@
 		return $tr;
 	}
 
+	function updateNavChip( navigation ) {
+		var $chip = $( '#wpps-nav-chip' );
+		var status = ( navigation && navigation.status ) || 'unknown';
+
+		$chip.removeClass( 'wpps-badge-unknown wpps-badge-in_sync wpps-badge-diverged' );
+		if ( 'in_sync' === status ) {
+			$chip.addClass( 'wpps-badge-in_sync' ).text( cfg.i18n.navInSync );
+		} else if ( 'differs' === status ) {
+			$chip.addClass( 'wpps-badge-diverged' ).text( cfg.i18n.navDiffer );
+		} else {
+			$chip.addClass( 'wpps-badge-unknown' ).text( cfg.i18n.navUnknown );
+		}
+	}
+
 	function updateGlobalsChip( globals ) {
 		var $chip = $( '#wpps-globals-chip' );
 		$chip.removeClass( 'wpps-badge-unknown wpps-badge-in_sync wpps-badge-diverged' );
@@ -649,6 +668,7 @@
 			feedback( $fb, '', true );
 			$body.empty();
 			updateGlobalsChip( response.data.globals );
+			updateNavChip( response.data.navigation );
 			if ( ! response.data.items.length ) {
 				$body.append( $( '<tr>' ).append( $( '<td>' ).attr( 'colspan', 6 ).text( cfg.i18n.noPosts ) ) );
 			} else {
@@ -786,6 +806,7 @@
 		$( '#wpps-posts-body' ).empty();
 		$( '#wpps-bulk-results' ).empty();
 		updateGlobalsChip( null );
+		updateNavChip( null );
 		rebuildStatusOptions();
 		applyFilter();
 	} );
@@ -1292,9 +1313,12 @@
 		applyBulkLock();
 	}
 
-	$( document ).on( 'click', '.wpps-globals-preview', function() {
-		var direction = $( this ).attr( 'data-direction' );
-		var $fb = $( '#wpps-globals-feedback' );
+	/*
+	 * Preview and confirm of a site-wide unit (global styles, navigation).
+	 * The peer is pinned when the preview opens: the confirm syncs with the
+	 * peer the preview was built for, whatever the select shows by then.
+	 */
+	function openUnitPreview( unit, direction ) {
 		var peerId = currentPeer();
 
 		// Same reason as in openSyncPreview(): reachable by keyboard while a run
@@ -1302,50 +1326,103 @@
 		if ( modalBusy ) {
 			return;
 		}
-
 		if ( ! peerId ) {
-			feedback( $fb, cfg.i18n.noPeer, false );
+			feedback( unit.$feedback, cfg.i18n.noPeer, false );
 			return;
 		}
-		openModal( ( 'push' === direction ? cfg.i18n.pushTitle : cfg.i18n.pullTitle ) + ' · Global styles' );
+		openModal( ( 'push' === direction ? cfg.i18n.pushTitle : cfg.i18n.pullTitle ) + ' · ' + unit.title );
 
-		post( 'wpps_globals_preview', { peer_id: peerId, direction: direction } ).done( function( response ) {
+		post( unit.previewAction, { peer_id: peerId, direction: direction } ).done( function( response ) {
 			if ( ! response || ! response.success || ! response.data ) {
 				$( '#wpps-modal-body' ).empty().append( $( '<p>' ).addClass( 'wpps-feedback-error' ).text( responseMessage( response ) ) );
 				return;
 			}
-			renderGlobalsPreview( response.data );
+			unit.render( response.data );
 			modalConfirm = function() {
-				var $modalFb = $( '#wpps-modal-feedback' );
-				setModalBusy( true );
-				feedback( $modalFb, cfg.i18n.working, true );
-				post( 'wpps_globals_sync', { peer_id: peerId, direction: direction } ).done( function( syncResponse ) {
-					setModalBusy( false );
-					if ( syncResponse && syncResponse.success ) {
-						var warnings = ( syncResponse.data && syncResponse.data.warnings ) || [];
-						if ( warnings.length ) {
-							// Terminal branch, same treatment as executeSync().
-							$( '#wpps-modal-body' ).empty().append( listBlock( cfg.i18n.warnings, warnings, 'wpps-report-warnings' ) );
-							$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
-							feedback( $modalFb, cfg.i18n.done, true );
-							modalConfirm = null;
-						} else {
-							closeModal();
-						}
-						loadStatus();
-					} else {
-						feedback( $modalFb, responseMessage( syncResponse ), false );
-						$( '#wpps-modal-confirm' ).prop( 'disabled', false );
-					}
-				} ).fail( function( xhr ) {
-					setModalBusy( false );
-					feedback( $modalFb, failMessage( xhr ), false );
-					$( '#wpps-modal-confirm' ).prop( 'disabled', false );
-				} );
+				runUnitSync( unit.syncAction, peerId, direction );
 			};
 		} ).fail( function( xhr ) {
 			$( '#wpps-modal-body' ).empty().append( $( '<p>' ).addClass( 'wpps-feedback-error' ).text( failMessage( xhr ) ) );
 		} );
+	}
+
+	function runUnitSync( action, peerId, direction ) {
+		var $modalFb = $( '#wpps-modal-feedback' );
+
+		setModalBusy( true );
+		feedback( $modalFb, cfg.i18n.working, true );
+		post( action, { peer_id: peerId, direction: direction } ).done( function( syncResponse ) {
+			setModalBusy( false );
+			if ( syncResponse && syncResponse.success ) {
+				var warnings = ( syncResponse.data && syncResponse.data.warnings ) || [];
+				if ( warnings.length ) {
+					// Terminal branch, same treatment as executeSync().
+					$( '#wpps-modal-body' ).empty().append( listBlock( cfg.i18n.warnings, warnings, 'wpps-report-warnings' ) );
+					$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
+					feedback( $modalFb, cfg.i18n.done, true );
+					modalConfirm = null;
+				} else {
+					closeModal();
+				}
+				loadStatus();
+			} else {
+				feedback( $modalFb, responseMessage( syncResponse ), false );
+				$( '#wpps-modal-confirm' ).prop( 'disabled', false );
+			}
+		} ).fail( function( xhr ) {
+			setModalBusy( false );
+			feedback( $modalFb, failMessage( xhr ), false );
+			$( '#wpps-modal-confirm' ).prop( 'disabled', false );
+		} );
+	}
+
+	$( document ).on( 'click', '.wpps-globals-preview', function() {
+		openUnitPreview( {
+			title: 'Global styles',
+			previewAction: 'wpps_globals_preview',
+			syncAction: 'wpps_globals_sync',
+			render: renderGlobalsPreview,
+			$feedback: $( '#wpps-globals-feedback' )
+		}, $( this ).attr( 'data-direction' ) );
+	} );
+
+	/* Navigation card (1.7.0). */
+
+	// Ready-made groups from the server: one list per menu, overlays, elements.
+	function renderNavPreview( data ) {
+		var $modalBody = $( '#wpps-modal-body' ).empty();
+		var preflight = data.preflight || {};
+		var blocked = ( preflight.errors || [] ).length > 0;
+
+		if ( data.in_sync ) {
+			$modalBody.append( $( '<p>' ).text( cfg.i18n.navInSync ) );
+		}
+		$.each( data.groups || [], function( _, group ) {
+			$modalBody.append( listBlock( group.heading, group.lines || [] ) );
+		} );
+		if ( ( data.only_on_target || [] ).length ) {
+			$modalBody.append( listBlock( cfg.i18n.navOnlyTarget, data.only_on_target ) );
+		}
+		$modalBody.append( $( '<p>' ).text( mediaLine( data.media || {}, data.direction ) ) );
+		if ( blocked ) {
+			$modalBody.append( listBlock( cfg.i18n.preflightErrors, preflight.errors, 'wpps-report-errors' ) );
+		}
+		if ( ( preflight.warnings || [] ).length ) {
+			$modalBody.append( listBlock( cfg.i18n.warnings, preflight.warnings, 'wpps-report-warnings' ) );
+		}
+
+		$( '#wpps-modal-confirm' ).prop( 'disabled', blocked );
+		applyBulkLock();
+	}
+
+	$( document ).on( 'click', '.wpps-nav-preview', function() {
+		openUnitPreview( {
+			title: cfg.i18n.navTitle,
+			previewAction: 'wpps_nav_preview',
+			syncAction: 'wpps_nav_sync',
+			render: renderNavPreview,
+			$feedback: $( '#wpps-nav-feedback' )
+		}, $( this ).attr( 'data-direction' ) );
 	} );
 
 	/* ------------------------------------------------------------------ *
