@@ -733,6 +733,7 @@ class WPPS_Rest {
 			'modified_gmt'   => $post->post_modified_gmt,
 			'hash'           => $this->exporter->content_hash( $post ),
 			'state_for_peer' => WPPS_Sync::read_state( $post->ID, $peer_id ),
+			'url'            => WPPS_Exporter::public_url( $post ),
 		);
 	}
 

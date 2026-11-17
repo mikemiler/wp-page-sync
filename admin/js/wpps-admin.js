@@ -26,6 +26,8 @@
 		noPosts: 'No posts found.',
 		filterEmpty: 'No posts match the current filter.',
 		sortAsc: 'Sort ascending.',
+		edit: 'Edit',
+		viewOnPeer: 'View on peer',
 		sortDesc: 'Sort descending.',
 		filterCount: 'Showing %1$s of %2$s posts.',
 		push: 'Push',
@@ -42,13 +44,16 @@
 		forceLabel: 'Force: the copy on the target differs from this one and will be overwritten. Its current title, content and excerpt are saved there as a post revision first, unless that site has revisions switched off or its post type does not support them.',
 		preflightErrors: 'Blocking problems (fix at the source first):',
 		warnings: 'Warnings:',
-		bulkConfirm: 'Push the selected posts (parents first)? Conflicting posts are skipped.',
+		bulkTitle: 'Push selected posts',
+		bulkIntro: 'Posts selected: %1$s. They are pushed to the peer parents first.',
+		bulkConflicts: 'These posts differ on the peer and are skipped unless you tick the option below:',
+		bulkForceLabel: 'Force: overwrite the posts listed above on the peer. The current title, content and excerpt of each are saved there as a post revision first, unless that site has revisions switched off or its post type does not support them.',
 		bulkNone: 'Select at least one post.',
 		bulkDone: 'Bulk push finished:',
 		pushed: 'pushed',
 		skipped: 'skipped',
 		failed: 'failed',
-		bulkSkipped: 'Skipped as conflicts (push each one on its own and confirm the force option):',
+		bulkSkipped: 'Skipped as conflicts (to overwrite them, select them again and tick the force option in the bulk dialog, or push each one on its own):',
 		bulkFailed: 'Failed:',
 		bulkWarnings: 'Pushed with warnings:',
 		bulkRunning: 'A bulk push is still running. Wait for it to finish before syncing a single post.',
@@ -328,6 +333,11 @@
 	// backdrop click.
 	var modalBusy = false;
 
+	// True while the force checkbox gates the confirm button (single-post
+	// preview). The bulk dialog shows the same checkbox as a plain option:
+	// unticked still runs, it only skips the conflicts.
+	var forceGatesConfirm = false;
+
 	function currentPeer() {
 		return $( '#wpps-peer-select' ).val() || '';
 	}
@@ -450,10 +460,12 @@
 
 	function openModal( title ) {
 		modalConfirm = null;
+		forceGatesConfirm = false;
 		setModalBusy( false );
 		$( '#wpps-modal-title' ).text( title || cfg.i18n.loading );
 		$( '#wpps-modal-body' ).empty().append( $( '<p>' ).text( cfg.i18n.loading ) );
 		$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
+		$( '#wpps-modal-force-label' ).text( '' );
 		$( '#wpps-modal-force' ).prop( 'checked', false );
 		$( '#wpps-modal-confirm' ).prop( 'disabled', true );
 		feedback( $( '#wpps-modal-feedback' ), '', true );
@@ -487,15 +499,78 @@
 			modalConfirm();
 		}
 	} );
-	// The checkbox only gates the confirm button while there is still something
-	// to confirm: after a completed run modalConfirm is cleared, and toggling
-	// force must not bring the button back for a second run from a stale
-	// preview.
+	// The checkbox only gates the confirm button in a single-post preview, and
+	// only while there is still something to confirm: after a completed run
+	// modalConfirm is cleared, and toggling force must not bring the button
+	// back for a second run from a stale preview.
 	$( document ).on( 'change', '#wpps-modal-force', function() {
-		if ( modalConfirm && ! $( '#wpps-modal-force-row' ).hasClass( 'wpps-hidden' ) ) {
+		if ( modalConfirm && forceGatesConfirm ) {
 			$( '#wpps-modal-confirm' ).prop( 'disabled', ! $( this ).is( ':checked' ) );
 		}
 	} );
+
+	// URL from this site's own server: only http(s), never another scheme.
+	function httpUrl( url ) {
+		return /^https?:\/\//i.test( url || '' ) ? url : '';
+	}
+
+	// Host of the selected peer, rendered on its <option> (no secrets).
+	function currentPeerHost() {
+		return ( $( '#wpps-peer-select option:selected' ).attr( 'data-host' ) || '' ).toLowerCase();
+	}
+
+	/*
+	 * A peer-supplied page URL, or '' unless it is http(s) on the selected
+	 * peer's own host (www-insensitive). The server already filters it; this
+	 * is the second fence, because the value comes from the other site.
+	 */
+	function safePeerUrl( url ) {
+		var host = currentPeerHost();
+		var parsed;
+
+		if ( ! url || ! host || ! window.URL ) {
+			return '';
+		}
+		try {
+			parsed = new window.URL( url );
+		} catch ( e ) {
+			return '';
+		}
+		if ( 'http:' !== parsed.protocol && 'https:' !== parsed.protocol ) {
+			return '';
+		}
+		return parsed.hostname.toLowerCase().replace( /^www\./, '' ) === host ? parsed.href : '';
+	}
+
+	function newTabLink( url, text ) {
+		return $( '<a>' ).attr( { href: url, target: '_blank', rel: 'noopener noreferrer' } ).text( text );
+	}
+
+	/*
+	 * Title cell in WP list-table form (core .row-title / .row-actions):
+	 * the title links to the page, the row actions sit below it. All links
+	 * open a new tab, so the loaded table stays as it is.
+	 */
+	function titleCell( title, viewUrl, actions ) {
+		var $actions = $( '<div>' ).addClass( 'row-actions' );
+		var $cell = $( '<td>' ).append( $( '<strong>' ).append(
+			viewUrl ? newTabLink( viewUrl, title ).addClass( 'row-title' ) : $( '<span>' ).text( title )
+		) );
+
+		$.each( actions, function( index, action ) {
+			var $span = $( '<span>' ).addClass( action.cls ).append(
+				newTabLink( action.url, action.label ).attr( 'aria-label', action.label + ': ' + title )
+			);
+			if ( index < actions.length - 1 ) {
+				$span.append( ' | ' );
+			}
+			$actions.append( $span );
+		} );
+		if ( actions.length ) {
+			$cell.append( $actions );
+		}
+		return $cell;
+	}
 
 	function renderStatusRow( item ) {
 		// data-title mirrors the rendered title cell so the search matches what
@@ -509,11 +584,21 @@
 			.attr( 'data-title', title )
 			.attr( 'data-modified', item.modified_gmt || '' );
 		var unsyncable = 'no_slug' === item.sync_status;
+		var peerUrl = item.peer ? safePeerUrl( item.peer.url ) : '';
+		var actions = [];
+
+		if ( httpUrl( item.edit_url ) ) {
+			actions.push( { cls: 'edit', url: item.edit_url, label: cfg.i18n.edit } );
+		}
+		if ( peerUrl ) {
+			actions.push( { cls: 'view', url: peerUrl, label: cfg.i18n.viewOnPeer } );
+		}
 
 		$tr.append( $( '<td>' ).addClass( 'check-column' ).append(
 			$( '<input>' ).attr( 'type', 'checkbox' ).addClass( 'wpps-row-check' ).prop( 'disabled', unsyncable )
 		) );
-		$tr.append( $( '<td>' ).text( title ) );
+		// A post without slug keeps a plain title (it has no stable address).
+		$tr.append( titleCell( title, unsyncable ? '' : httpUrl( item.view_url ), actions ) );
 		$tr.append( $( '<td>' ).append( $( '<code>' ).text( item.path || '—' ) ) );
 		$tr.append( $( '<td>' ).text( item.modified_gmt || '' ) );
 		$tr.append( $( '<td>' ).append( badge( item.sync_status ) ) );
@@ -839,13 +924,19 @@
 			$( '#wpps-modal-force-label' ).text( cfg.i18n.forceLabel );
 			$( '#wpps-modal-force-row' ).removeClass( 'wpps-hidden' );
 			$( '#wpps-modal-confirm' ).prop( 'disabled', true );
+			forceGatesConfirm = true;
 		} else {
+			// Never inherit a force row (possibly ticked) from another dialog.
+			$( '#wpps-modal-force-row' ).addClass( 'wpps-hidden' );
+			$( '#wpps-modal-force' ).prop( 'checked', false );
 			$( '#wpps-modal-confirm' ).prop( 'disabled', blocked );
 		}
 		applyBulkLock();
 	}
 
-	function executeSync( direction, postType, path ) {
+	// peerId is the peer the preview was built for, never the live select:
+	// the force decision belongs to that peer's status.
+	function executeSync( direction, postType, path, peerId ) {
 		var $fb = $( '#wpps-modal-feedback' );
 		var force = $( '#wpps-modal-force' ).is( ':checked' ) ? 1 : 0;
 
@@ -853,7 +944,7 @@
 		feedback( $fb, cfg.i18n.working, true );
 
 		post( 'push' === direction ? 'wpps_push' : 'wpps_pull', {
-			peer_id: currentPeer(),
+			peer_id: peerId,
 			post_type: postType,
 			path: path,
 			force: force
@@ -884,6 +975,8 @@
 	}
 
 	function openSyncPreview( direction, postType, path ) {
+		var peerId = currentPeer();
+
 		// Keyboard-reachable while the overlay blocks the mouse: opening a second
 		// preview would reset the busy flag and hand the user a confirm button
 		// while the first run is still writing to the peer.
@@ -894,7 +987,7 @@
 		openModal( ( 'push' === direction ? cfg.i18n.pushTitle : cfg.i18n.pullTitle ) + ' · ' + path );
 
 		post( 'wpps_sync_preview', {
-			peer_id: currentPeer(),
+			peer_id: peerId,
 			post_type: postType,
 			path: path,
 			direction: direction
@@ -905,7 +998,7 @@
 			}
 			renderPreview( response.data );
 			modalConfirm = function() {
-				executeSync( direction, postType, path );
+				executeSync( direction, postType, path, peerId );
 			};
 		} ).fail( function( xhr ) {
 			$( '#wpps-modal-body' ).empty().append( $( '<p>' ).addClass( 'wpps-feedback-error' ).text( failMessage( xhr ) ) );
@@ -932,6 +1025,9 @@
 	// in sync and no other place sets this button's disabled state.
 	function updateBulkButton() {
 		$( '#wpps-bulk-push' ).prop( 'disabled', modalBusy || bulkBusy || 0 === checkedRows().length );
+		// A running sync writes to the peer it started with; the selects must
+		// not drift away from that target while it runs.
+		$( '#wpps-peer-select, #wpps-post-type-select' ).prop( 'disabled', modalBusy || bulkBusy );
 	}
 
 	// "Select all" reflects the visible selection: checked only while every
@@ -952,19 +1048,37 @@
 	} );
 
 	$( document ).on( 'click', '#wpps-bulk-push', function() {
-		var $fb = $( '#wpps-bulk-feedback' );
-		var $results = $( '#wpps-bulk-results' ).empty();
+		var forcePush = cfg.forcePush || [];
+		var peerId = currentPeer();
 		var queue = [];
 
-		checkedRows().each( function() {
-			var $tr = $( this ).closest( 'tr' );
-			queue.push( { post_type: $tr.attr( 'data-post-type' ), path: $tr.attr( 'data-path' ) } );
-		} );
-		if ( ! queue.length ) {
-			feedback( $fb, cfg.i18n.bulkNone, false );
+		// The button is disabled while either run writes to the peer; this
+		// also holds for a click that arrives anyway. An open modal (a preview
+		// still loading, by keyboard behind the overlay) must not be replaced:
+		// its late answer would render over the bulk dialog.
+		if ( modalBusy || bulkBusy || ! $( '#wpps-modal-overlay' ).hasClass( 'wpps-hidden' ) ) {
 			return;
 		}
-		if ( ! window.confirm( cfg.i18n.bulkConfirm ) ) {
+		if ( ! peerId ) {
+			feedback( $( '#wpps-bulk-feedback' ), cfg.i18n.noPeer, false );
+			return;
+		}
+
+		// The status is read now, when the dialog lists the conflicts: only
+		// these rows can be forced, so a post that turned into a conflict
+		// after the list was loaded is still skipped, never overwritten.
+		checkedRows().each( function() {
+			var $tr = $( this ).closest( 'tr' );
+			var status = $tr.attr( 'data-sync-status' );
+			queue.push( {
+				post_type: $tr.attr( 'data-post-type' ),
+				path: $tr.attr( 'data-path' ),
+				status: status,
+				conflict: -1 !== $.inArray( status, forcePush )
+			} );
+		} );
+		if ( ! queue.length ) {
+			feedback( $( '#wpps-bulk-feedback' ), cfg.i18n.bulkNone, false );
 			return;
 		}
 
@@ -972,12 +1086,55 @@
 			var depth = a.path.split( '/' ).length - b.path.split( '/' ).length;
 			return 0 !== depth ? depth : a.path.localeCompare( b.path );
 		} );
+		openBulkDialog( queue, peerId );
+	} );
 
+	/*
+	 * Bulk confirmation in the shared modal: the count, the conflicts it would
+	 * skip, and (only if there are any) the force option for exactly those.
+	 * Confirm closes the modal and the run reports below the table as before,
+	 * so the modal is free for single previews (still locked by bulkBusy).
+	 * peerId is the peer whose table the conflicts were read from; every
+	 * request of the run goes to it, whatever the select shows later.
+	 */
+	function openBulkDialog( queue, peerId ) {
+		var conflicts = $.grep( queue, function( item ) {
+			return item.conflict;
+		} );
+		var $modalBody;
+
+		openModal( cfg.i18n.bulkTitle );
+		$modalBody = $( '#wpps-modal-body' ).empty();
+		$modalBody.append( $( '<p>' ).text( sprintfArgs( cfg.i18n.bulkIntro, [ queue.length ] ) ) );
+		if ( conflicts.length ) {
+			$modalBody.append( listBlock( cfg.i18n.bulkConflicts, $.map( conflicts, function( item ) {
+				return item.path + ' (' + statusLabel( item.status ) + ')';
+			} ), 'wpps-report-warnings' ) );
+			$( '#wpps-modal-force-label' ).text( cfg.i18n.bulkForceLabel );
+			$( '#wpps-modal-force-row' ).removeClass( 'wpps-hidden' );
+		}
+		$( '#wpps-modal-confirm' ).prop( 'disabled', false );
+
+		modalConfirm = function() {
+			var force = $( '#wpps-modal-force' ).is( ':checked' );
+
+			closeModal();
+			runBulkPush( queue, force, peerId );
+		};
+	}
+
+	function runBulkPush( queue, force, peerId ) {
+		var $fb = $( '#wpps-bulk-feedback' );
+		var $results = $( '#wpps-bulk-results' ).empty();
 		var pushed = 0;
 		var skipped = [];
 		var failed = [];
 		var warned = [];
 
+		// Show the run's target (the select may have changed behind the
+		// dialog), so the closing reload lists the peer that was written to.
+		$( '#wpps-peer-select' ).val( peerId );
+		$( '#wpps-post-type-select' ).val( queue[ 0 ].post_type );
 		bulkBusy = true;
 		updateBulkButton();
 
@@ -1016,7 +1173,13 @@
 			}
 			var item = queue.shift();
 			feedback( $fb, cfg.i18n.working + ' ' + item.path, true );
-			post( 'wpps_push', { peer_id: currentPeer(), post_type: item.post_type, path: item.path, force: 0 } )
+			post( 'wpps_push', {
+				peer_id: peerId,
+				post_type: item.post_type,
+				path: item.path,
+				// Only rows listed as conflicts in the dialog are ever forced.
+				force: force && item.conflict ? 1 : 0
+			} )
 				.done( function( response ) {
 					if ( response && response.success ) {
 						pushed++;
@@ -1037,7 +1200,7 @@
 				.always( next );
 		}
 		next();
-	} );
+	}
 
 	/* Pull list: posts that exist only on the peer. */
 
@@ -1070,7 +1233,8 @@
 			}
 			$.each( peerOnly, function( _, item ) {
 				var $tr = $( '<tr>' ).attr( 'data-path', item.path ).attr( 'data-post-type', item.post_type );
-				$tr.append( $( '<td>' ).text( item.title || '' ) );
+				var peerUrl = safePeerUrl( item.url );
+				$tr.append( titleCell( item.title || '', '', peerUrl ? [ { cls: 'view', url: peerUrl, label: cfg.i18n.viewOnPeer } ] : [] ) );
 				$tr.append( $( '<td>' ).append( $( '<code>' ).text( item.path ) ) );
 				$tr.append( $( '<td>' ).text( item.status || '' ) );
 				$tr.append( $( '<td>' ).append(
@@ -1131,6 +1295,7 @@
 	$( document ).on( 'click', '.wpps-globals-preview', function() {
 		var direction = $( this ).attr( 'data-direction' );
 		var $fb = $( '#wpps-globals-feedback' );
+		var peerId = currentPeer();
 
 		// Same reason as in openSyncPreview(): reachable by keyboard while a run
 		// from the modal is in flight, and opening a preview clears the lock.
@@ -1138,13 +1303,13 @@
 			return;
 		}
 
-		if ( ! currentPeer() ) {
+		if ( ! peerId ) {
 			feedback( $fb, cfg.i18n.noPeer, false );
 			return;
 		}
 		openModal( ( 'push' === direction ? cfg.i18n.pushTitle : cfg.i18n.pullTitle ) + ' · Global styles' );
 
-		post( 'wpps_globals_preview', { peer_id: currentPeer(), direction: direction } ).done( function( response ) {
+		post( 'wpps_globals_preview', { peer_id: peerId, direction: direction } ).done( function( response ) {
 			if ( ! response || ! response.success || ! response.data ) {
 				$( '#wpps-modal-body' ).empty().append( $( '<p>' ).addClass( 'wpps-feedback-error' ).text( responseMessage( response ) ) );
 				return;
@@ -1154,7 +1319,7 @@
 				var $modalFb = $( '#wpps-modal-feedback' );
 				setModalBusy( true );
 				feedback( $modalFb, cfg.i18n.working, true );
-				post( 'wpps_globals_sync', { peer_id: currentPeer(), direction: direction } ).done( function( syncResponse ) {
+				post( 'wpps_globals_sync', { peer_id: peerId, direction: direction } ).done( function( syncResponse ) {
 					setModalBusy( false );
 					if ( syncResponse && syncResponse.success ) {
 						var warnings = ( syncResponse.data && syncResponse.data.warnings ) || [];

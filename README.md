@@ -6,7 +6,8 @@ in both directions, including the upload files they reference.
 ## What it does
 
 - Push and pull pages and posts between two paired sites, individually or as a
-  bulk selection that syncs parents before their children.
+  bulk selection that syncs parents before their children. A bulk push can
+  overwrite all conflicting posts at once from its confirmation dialog.
 - Transfers the referenced upload files with the post: images, videos, audio
   and linked files such as PDFs, checksum-verified and re-attached on the
   receiving side with their URLs rewritten to that site's domain and uploads
